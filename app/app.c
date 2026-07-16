@@ -140,8 +140,8 @@ void function_in_main_c(void)
     create_queue();
 
     // 注册任务
-    TaskRegister(&cmd_task, &(Task_Init_Config_s){.func = StartCmdTask, .priority = 1});
-    TaskRegister(&gimbal_task, &(Task_Init_Config_s){.func = StartGimbalTask, .priority = 1});
+    TaskRegister(&cmd_task, &(Task_Init_Config_s){.func = StartCmdTask, .priority = 2});
+    TaskRegister(&gimbal_task, &(Task_Init_Config_s){.func = StartGimbalTask, .priority = 2});
     TaskRegister(&sensor_task, &(Task_Init_Config_s){.func = StartSensorTask, .priority = 3});
     TaskRegister(&shoot_task, &(Task_Init_Config_s){.func = StartShootTask, .priority = 2});
     __enable_irq(); // 开启中断
