@@ -22,23 +22,25 @@ MAHONY_INSTANCE_DEF(mahony);
 void AppSensorInit(void)
 {
     // 注册并初始化 BMI088
-    BMI088_Init_Config_s bmi088_cfg = {
+    BMI088_Register_Config_s bmi088_reg = {
+        .bmi088_config = {
+            .acc_range = BMI088_ACC_RANGE_3G,
+            .acc_bwp = BMI088_ACC_BWP_NORMAL,
+            .acc_odr = BMI088_ACC_ODR_400,
+            .gyro_range = BMI088_GYRO_RANGE_2000,
+            .gyro_conf = BMI088_GYRO_CONF_2000_230,
+            .work_mode = BMI088_MODE_INT,
+        },
         .spi_e = SPI_BMI088,
         .cs_acc_e = GPIO_BMI088_CS_ACCEL,
         .cs_gyro_e = GPIO_BMI088_CS_GYRO,
         .int_acc_e = GPIO_BMI088_INT_ACCEL,
         .int_gyro_e = GPIO_BMI088_INT_GYRO,
         .heater_e = TIM_HEATER,
-        .acc_range = BMI088_ACC_RANGE_3G,
-        .acc_bwp = BMI088_ACC_BWP_NORMAL,
-        .acc_odr = BMI088_ACC_ODR_400,
-        .gyro_range = BMI088_GYRO_RANGE_2000,
-        .gyro_conf = BMI088_GYRO_CONF_2000_230,
         .daemon_reload = 20,
         .daemon_fault = DAEMON_FAULT_NONE,
-        .work_mode = BMI088_MODE_INT,
     };
-    BMI088Register(&bmi088, &bmi088_cfg);
+    BMI088Register(&bmi088, &bmi088_reg);
 
     // 初始化 Mahony 滤波器
     Mahony_Init_Config_s mahony_cfg = {

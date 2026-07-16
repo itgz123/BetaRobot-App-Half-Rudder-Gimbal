@@ -13,13 +13,15 @@ SBUS_INSTANCE_DEF(sbus_inst);
 void AppCmdInit(void)
 {
     // 注册 SBUS 实例
-    SBUS_Init_Config_s sbus_cfg = {
+    SBUS_Register_Config_s sbus_reg = {
+        .sbus_config = {
+            .lost_timeout_ms = 1000,
+        },
         .uart_e = UART_SBUS,
         .daemon_reload = 100,
         .daemon_fault = DAEMON_FAULT_NONE,
-        .lost_timeout_ms = 1000,
     };
-    SBUSRegister(&sbus_inst, &sbus_cfg);
+    SBUSRegister(&sbus_inst, &sbus_reg);
 }
 
 ITCM_RAM void AppCmdRun(void)
