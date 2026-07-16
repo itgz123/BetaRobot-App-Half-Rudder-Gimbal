@@ -17,14 +17,12 @@
 #define BSP_SPI_USED                  // SPI (BMI088 / LCD)
 #define BSP_TIM_USED                  // 定时器 (PWM / 编码器)
 #define BSP_USART_USED                // 串口 (SBUS / VOFA / RS485)
-#define BSP_ADC_USED                  // ADC (电池电压)
 #define BSP_CAN_USED                  // CAN (FDCAN / BXCAN, DJI 电机)
 #define DRV_PID_USED                  // PID 控制器
 #define DRV_MIT_USED                  // MIT PD 控制器
 #define DRV_BMI088_USED               // BMI088 IMU 驱动
 #define DRV_SBUS_USED                 // SBUS 遥控器驱动
 #define DRV_MAHONY_USED               // Mahony 姿态解算
-#define DRV_CHASSIS_USED              // 底盘运动学
 #define DRV_DJIMOTOR_USED             // DJI 电机驱动
 #define DRV_DMMOTOR_USED              // DM 电机驱动
 #define BMI088_HEAT_USED              // BMI088 加热（TIM8 OPM+RCR 24V 硬件安全关断）

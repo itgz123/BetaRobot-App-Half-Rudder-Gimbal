@@ -9,11 +9,16 @@
 #include "bsp_freertos.h"
 #include "bsp_dwt.h"
 
+static BMI088_Data_t imu = {0};
+static euler_t euler = {0};
+static sensor2gimbal_data_t sensor2gimbal_data;
+static uint64_t last_imu_ts = 0; /* 上帧 IMU 时间戳 (us)，用于计算 dt */
+static float dt;
+static vector3_t gyro;
+static vector3_t acc;
 BMI088_INSTANCE_DEF(bmi088);
 MAHONY_INSTANCE_DEF(mahony);
-BMI088_Data_t imu = {0};
-euler_t euler = {0};
-static uint64_t last_imu_ts = 0; /* 上帧 IMU 时间戳 (us)，用于计算 dt */
+
 void AppSensorInit(void)
 {
     // 注册并初始化 BMI088
@@ -49,7 +54,7 @@ ITCM_RAM void AppSensorRun(void)
     imu = BMI088ReadInt(&bmi088);
 
     // 计算 dt：用 BMI088 插值时间戳之差 (us → s)
-    float dt = 0.0f;
+    dt = 0.0f;
     if (imu.time_stamp > 0 && last_imu_ts > 0)
     {
         dt = (float)(imu.time_stamp - last_imu_ts) * 1e-6f;
@@ -57,19 +62,17 @@ ITCM_RAM void AppSensorRun(void)
     last_imu_ts = imu.time_stamp;
 
     // Mahony 姿态解算（dt 由 APP 层根据 BMI088 插值时间戳传入）
-    vector3_t gyro = {imu.gyro[0], imu.gyro[1], imu.gyro[2]};
-    vector3_t acc = {imu.acc[0], imu.acc[1], imu.acc[2]};
+    gyro.x = imu.gyro[0];
+    gyro.y = imu.gyro[1];
+    gyro.z = imu.gyro[2];
+    acc.x = imu.acc[0];
+    acc.y = imu.acc[1];
+    acc.z = imu.acc[2];
     MahonyUpdate(&mahony, gyro, acc, dt);
 
     // 从 Mahony 四元数解算 yaw 角
     euler = BSP_Math_QuatToEuler(mahony.quat);
 
-    // 给底盘发送 yaw 轴数据
-    sensor2chassis_data_t send_data = {
-        .yaw_rate = imu.gyro[2], // yaw 角速度 (rad/s)
-        .yaw_angle = euler.yaw,  // Mahony 解算的 yaw 角 (rad)
-        .yaw_acc = imu.acc[0],   // 机体 x 轴加速度 (m/s²)
-    };
-    xQueueOverwrite(sensor2chassis_queue_handle, &send_data);
-    VofaSetChannel(14, bmi088.temperature);
+    // 通过队列发送出去
+    // xQueueOverwrite(sensor2gimbal_queue_handle, &sensor2gimbal_data);
 }
