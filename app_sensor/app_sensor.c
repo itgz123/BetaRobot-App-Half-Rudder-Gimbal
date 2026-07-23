@@ -11,7 +11,7 @@
 
 static BMI088_Data_t imu = {0};
 static euler_t euler = {0};
-static sensor2gimbal_data_t sensor2gimbal_data;
+// static sensor2gimbal_data_t sensor2gimbal_data;
 static uint64_t last_imu_ts = 0; /* 上帧 IMU 时间戳 (us)，用于计算 dt */
 static float dt;
 static vector3_t gyro;

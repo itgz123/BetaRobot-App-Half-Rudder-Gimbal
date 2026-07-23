@@ -11,27 +11,27 @@ void function_in_main_c(void);
 
 typedef struct
 {
-
+    uint8_t temp_unused;
 } cmd2shoot_data_t;
 typedef struct
 {
-
+    uint8_t temp_unused;
 } shoot2cmd_data_t;
 typedef struct
 {
-
+    uint8_t temp_unused;
 } gimbal2cmd_data_t;
 typedef struct
 {
-
+    uint8_t temp_unused;
 } cmd2gimbal_data_t;
 typedef struct
 {
-
+    uint8_t temp_unused;
 } sensor2gimbal_data_t;
 typedef struct
 {
-
+    uint8_t temp_unused;
 } gimbal2sensor_data_t;
 /*============================================
  *              队列句柄外部声明

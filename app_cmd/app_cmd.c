@@ -6,7 +6,7 @@
 //
 #include "bsp_freertos.h"
 
-static cmd2gimbal_data_t cmd2gimbal_data;
+// static cmd2gimbal_data_t cmd2gimbal_data;
 
 SBUS_INSTANCE_DEF(sbus_inst);
 
