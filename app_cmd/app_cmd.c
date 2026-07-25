@@ -17,7 +17,6 @@ void AppCmdInit(void)
 
     // 配置 SBUS（运行参数）
     SBUS_Config_s sbus_cfg = {
-        .daemon_fault_threshold =10,
         .daemon_reload = 100,
         .daemon_fault = DAEMON_FAULT_NONE,
     };
