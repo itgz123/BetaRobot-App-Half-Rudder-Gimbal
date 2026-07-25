@@ -19,6 +19,7 @@ void AppCmdInit(void)
     SBUS_Config_s sbus_cfg = {
         .daemon_reload = 100,
         .daemon_fault = DAEMON_FAULT_NONE,
+        .lost_timeout_ms = 1000,
     };
     SBUSConfig(&sbus_inst, &sbus_cfg);
 }
