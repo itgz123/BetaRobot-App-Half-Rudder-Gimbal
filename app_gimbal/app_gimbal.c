@@ -43,7 +43,7 @@ void AppGimbalInit(void)
         .pos_max = 12.5,
         .t_range = 3,
         .vel_range = 20,
-        .reload_count = 50,
+        .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
     };
     DMMotorConfig(&pitchdown_motor, &pitchdown_cfg);
@@ -76,7 +76,7 @@ void AppGimbalInit(void)
         .pos_max = 12.5,
         .t_range = 3,
         .vel_range = 20,
-        .reload_count = 50,
+        .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
     };
     DMMotorConfig(&pitchup_motor, &pitchup_cfg);
