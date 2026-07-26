@@ -13,10 +13,11 @@ SBUS_INSTANCE_DEF(sbus_inst);
 void AppCmdInit(void)
 {
     // 注册 SBUS（仅硬件绑定）
-    SBUSRegister(&sbus_inst, UART_SBUS);
+    SBUSRegister(&sbus_inst);
 
-    // 配置 SBUS（运行参数）
+    // 配置 SBUS（硬件映射 + 运行参数）
     SBUS_Config_s sbus_cfg = {
+        .uart_e = UART_SBUS,
         .daemon_reload = 100,
         .daemon_fault = DAEMON_FAULT_NONE,
         .lost_timeout_ms = 1000,

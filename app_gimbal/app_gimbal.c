@@ -12,11 +12,12 @@ DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
 void AppGimbalInit(void)
 {
     // 注册 CAN 实例（下pitch、上pitch 共用 CAN_2）
-    DMMotorRegister(&pitchdown_motor, CAN_2);
-    DMMotorRegister(&pitchup_motor, CAN_2);
+    DMMotorRegister(&pitchdown_motor);
+    DMMotorRegister(&pitchup_motor);
 
     // 配置下pitch
     DMMotor_Config_s pitchdown_cfg = {
+        .can_e = CAN_2,
         .controller_setting = {
             .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
             .feedback_direction = MOTOR_DIRECTION_NORMAL,          // 电机方向
@@ -50,6 +51,7 @@ void AppGimbalInit(void)
 
     // 配置上pitch
     DMMotor_Config_s pitchup_cfg = {
+        .can_e = CAN_2,
         .controller_setting = {
             .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
             .feedback_direction = MOTOR_DIRECTION_NORMAL,          // 电机方向
@@ -89,6 +91,10 @@ ITCM_RAM void AppGimbalRun(void)
 {
     MotorGetData((MotorBase_s *)(&pitchdown_motor));
     MotorGetData((MotorBase_s *)(&pitchup_motor));
+
+    MotorSetRef((MotorBase_s *)(&pitchdown_motor), 0);
+    MotorSend((MotorBase_s *)(&pitchdown_motor));
+
     VofaSetChannel(1, pitchup_motor.base.data.position);
     VofaSetChannel(2, pitchup_motor.base.data.position_single);
     VofaSetChannel(3, pitchup_motor.base.data.speed);

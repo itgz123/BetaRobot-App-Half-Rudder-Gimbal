@@ -21,19 +21,17 @@ MAHONY_INSTANCE_DEF(mahony);
 
 void AppSensorInit(void)
 {
-    // 注册 BMI088（硬件绑定）
-    BMI088_Register_Config_s bmi088_reg = {
+    // 注册 BMI088（只注册子模块，Config 时配置硬件）
+    BMI088Register(&bmi088);
+
+    // 配置 BMI088（硬件枚举 + 传感器参数 + daemon）
+    BMI088_Config_s bmi088_cfg = {
         .spi_e = SPI_BMI088,
         .cs_acc_e = GPIO_BMI088_CS_ACCEL,
         .cs_gyro_e = GPIO_BMI088_CS_GYRO,
         .int_acc_e = GPIO_BMI088_INT_ACCEL,
         .int_gyro_e = GPIO_BMI088_INT_GYRO,
         .heater_e = TIM_HEATER,
-    };
-    BMI088Register(&bmi088, &bmi088_reg);
-
-    // 配置 BMI088（传感器参数 + daemon）
-    BMI088_Config_s bmi088_cfg = {
         .daemon_reload = 20,
         .daemon_fault = DAEMON_FAULT_NONE,
         .acc_range = BMI088_ACC_RANGE_3G,
