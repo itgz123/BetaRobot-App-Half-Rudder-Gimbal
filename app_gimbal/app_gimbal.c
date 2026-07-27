@@ -9,6 +9,18 @@
 DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
 DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
 
+// #define DM_MOTOR_CNT 4
+// #define SPEED_SMOOTH_COEF 0.85f
+// #define ECD_ANGLE_COEF_DM 0.043945f     // (360/8192),将编码器值转化为角度制
+// #define REDUCTION_RATIO_DM 10           // 自身减速比
+
+// #define DM_P_MIN  (-3.14f)
+// #define DM_P_MAX  3.14f
+// #define DM_V_MIN  (-30.0f)
+// #define DM_V_MAX  30.0f
+// #define DM_T_MIN  (-10.0f)
+// #define DM_T_MAX   10.0f
+
 void AppGimbalInit(void)
 {
     // 注册 CAN 实例（下pitch、上pitch 共用 CAN_2）
@@ -89,21 +101,21 @@ void AppGimbalInit(void)
 
 ITCM_RAM void AppGimbalRun(void)
 {
-    MotorGetData((MotorBase_s *)(&pitchdown_motor));
-    MotorGetData((MotorBase_s *)(&pitchup_motor));
+    // MotorGetData((MotorBase_s *)(&pitchdown_motor));
+    // MotorGetData((MotorBase_s *)(&pitchup_motor));
 
-    MotorSetRef((MotorBase_s *)(&pitchdown_motor), 0);
-    MotorSend((MotorBase_s *)(&pitchdown_motor));
+    // MotorSetRef((MotorBase_s *)(&pitchdown_motor), 0);
+    // MotorSend((MotorBase_s *)(&pitchdown_motor));
 
-    VofaSetChannel(1, pitchup_motor.base.data.position);
-    VofaSetChannel(2, pitchup_motor.base.data.position_single);
-    VofaSetChannel(3, pitchup_motor.base.data.speed);
-    VofaSetChannel(4, pitchup_motor.base.data.torque_current);
+    // VofaSetChannel(1, pitchup_motor.base.data.position);
+    // VofaSetChannel(2, pitchup_motor.base.data.position_single);
+    // VofaSetChannel(3, pitchup_motor.base.data.speed);
+    // VofaSetChannel(4, pitchup_motor.base.data.torque);
 
-    VofaSetChannel(5, pitchdown_motor.base.data.position);
-    VofaSetChannel(6, pitchdown_motor.base.data.position_single);
-    VofaSetChannel(7, pitchdown_motor.base.data.speed);
-    VofaSetChannel(8, pitchdown_motor.base.data.torque_current);
+    // VofaSetChannel(5, pitchdown_motor.base.data.position);
+    // VofaSetChannel(6, pitchdown_motor.base.data.position_single);
+    // VofaSetChannel(7, pitchdown_motor.base.data.speed);
+    // VofaSetChannel(8, pitchdown_motor.base.data.torque);
 
     VofaSend();
 }
