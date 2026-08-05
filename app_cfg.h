@@ -30,6 +30,7 @@
 #define DAEMON_USED                   // Daemon 看门狗
 #define VOFA_LITE_USED                // VOFA+ JustFloat 遥测
 #define BSP_CRC_USED                  // 软件 CRC 计算
+#define DRV_COMM_USED                 // 通用通信驱动框架（Media/Protocol/Engine）
 #define LOG_GLOBAL_LIMIT 100          // 日志每秒限量
 #define AxisMitVofaLiteSetChannelUsed // 启用轴控制 VOFA 调试通道
 #define GENERATE_DISASSEMBLY          // 生成反汇编文件 .lst
