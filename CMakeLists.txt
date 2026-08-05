@@ -4,7 +4,6 @@ set(MODULE_SOURCES
     app_gimbal/app_gimbal.c
     app_sensor/app_sensor.c
     app_shoot/app_shoot.c
-    app_comm/app_comm.c
     # app_referee_system/app_referee_system.c
 )
 
@@ -15,6 +14,5 @@ set(MODULE_INCLUDE_DIRS
     app
     app_sensor
     app_shoot
-    app_comm
     # app_referee_system
 )

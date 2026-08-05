@@ -9,12 +9,12 @@
 //
 #include "drv_daemon.h"
 #include "drv_vofa.h"
+#include "drv_comm.h"
 //
 #include "app_cmd.h"
 #include "app_gimbal.h"
 #include "app_sensor.h"
 #include "app_shoot.h"
-#include "app_comm.h"
 
 /* 队列实例定义 */
 QUEUE_INSTANCE_DEF(cmd2shoot_queue, 1, cmd2shoot_data_t);
@@ -131,12 +131,12 @@ void function_in_main_c(void)
     BSPLogInit();
     DaemonInit();
     VofaInit();
+    CommInit(); // 通信框架（DRV_COMM_USED 启用；内部自建 RX 任务与默认介质/协议）
     // app
     AppSensorInit();
     AppGimbalInit();
     AppCmdInit();
     AppShootInit();
-    AppCommInit(); // 通信框架（介质/协议/消费者 + RX 任务）
 
     // 创建队列
     create_queue();
