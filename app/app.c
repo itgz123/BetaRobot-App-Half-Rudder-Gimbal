@@ -9,7 +9,7 @@
 //
 #include "drv_daemon.h"
 #include "drv_vofa.h"
-#include "drv_comm.h"
+#include "drv_comm.h" /* 通信框架：CommInit() 引擎初始化 */
 //
 #include "app_cmd.h"
 #include "app_gimbal.h"
@@ -131,7 +131,7 @@ void function_in_main_c(void)
     BSPLogInit();
     DaemonInit();
     VofaInit();
-    CommInit(); // 通信框架（DRV_COMM_USED 启用；内部自建 RX 任务与默认介质/协议）
+    CommInit(); // 通信框架（引擎初始化：自建 RX 任务）
     // app
     AppSensorInit();
     AppGimbalInit();
