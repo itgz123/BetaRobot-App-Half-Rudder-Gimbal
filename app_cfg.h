@@ -30,12 +30,13 @@
 #define DAEMON_USED                   // Daemon 看门狗
 #define VOFA_LITE_USED                // VOFA+ JustFloat 遥测
 #define BSP_CRC_USED                  // 软件 CRC 计算
+#define DRV_COMM_USED                 //
 #define LOG_GLOBAL_LIMIT 100          // 日志每秒限量
 #define AxisMitVofaLiteSetChannelUsed // 启用轴控制 VOFA 调试通道
 #define GENERATE_DISASSEMBLY          // 生成反汇编文件 .lst
 #define GENERATE_READELF              // 生成 readelf 输出文件
-#define DEVELOPMENT_BOARD DJI_C
-#define HAL_CONFIG_NAME DJI_C
+#define DEVELOPMENT_BOARD DM_MC02
+#define HAL_CONFIG_NAME DM_MC02
 
 // #define UART_LOG_USED     // UART 日志输出
 

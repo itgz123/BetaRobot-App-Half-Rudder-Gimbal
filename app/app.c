@@ -36,10 +36,10 @@ QueueHandle_t gimbal2sensor_queue_handle = NULL;
 #define SENSOR_STACK_SIZE 512
 #define SHOOT_STACK_SIZE 512
 // 任务频率设置
-#define CMD_FREQ_MS 2    // 遥控
-#define GIMBAL_FREQ_MS 1 // 云台
-#define SENSOR_FREQ_MS 1 // 传感器
-#define SHOOT_FREQ_MS 2  // 发射
+#define CMD_FREQ_MS 2     // 遥控
+#define GIMBAL_FREQ_MS 1  // 云台
+#define SENSOR_FREQ_MS 1  // 传感器
+#define SHOOT_FREQ_MS 100 // 发射
 /* 任务实例定义 */
 TASK_INSTANCE_DEF(cmd_task, CMD_STACK_SIZE);
 TASK_INSTANCE_DEF(gimbal_task, GIMBAL_STACK_SIZE);
