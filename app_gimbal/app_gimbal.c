@@ -4,23 +4,29 @@
 #include "drv_motor_base.h"
 #include "drv_dmmotor.h"
 #include "drv_vofa.h"
+#include "drv_axis_mit_lite.h"
+#include "robot_def.h"
 
 // yaw_motor; // yaw电机
 DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
 DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
+static AxisMitLiteInstance pitchup_axis;
 
-// #define DM_MOTOR_CNT 4
-// #define SPEED_SMOOTH_COEF 0.85f
-// #define ECD_ANGLE_COEF_DM 0.043945f     // (360/8192),将编码器值转化为角度制
-// #define REDUCTION_RATIO_DM 10           // 自身减速比
+/* 私有函数 */
+// pitchup方法
+static void setpitchup(float ref)
+{
 
-// #define DM_P_MIN  (-3.14f)
-// #define DM_P_MAX  3.14f
-// #define DM_V_MIN  (-30.0f)
-// #define DM_V_MAX  30.0f
-// #define DM_T_MIN  (-10.0f)
-// #define DM_T_MAX   10.0f
+    MotorSetRef(&(pitchup_motor.base), ref);
+}
+static MotorData_s getpitchup(void)
+{
+    MotorData_s data = MotorGetData(&(pitchup_motor.base));
+    data.position = (pitchup_motor.base.data_all.data.position - pitchup_position_0) - (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
+    return data;
+}
 
+/* 外部函数 */
 void AppGimbalInit(void)
 {
     // 注册 CAN 实例（下pitch、上pitch 共用 CAN_2）
@@ -53,9 +59,9 @@ void AppGimbalInit(void)
         .pid_speed_setting = {},
         .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
         .speed_lpf_rc = 0,
-        .pos_max = 12.5,
-        .t_range = 3,
-        .vel_range = 20,
+        .pos_max = M_PI,
+        .t_range = 10,
+        .vel_range = 30,
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
     };
@@ -87,35 +93,48 @@ void AppGimbalInit(void)
         .pid_speed_setting = {},
         .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
         .speed_lpf_rc = 0,
-        .pos_max = 12.5,
-        .t_range = 3,
-        .vel_range = 20,
+        .pos_max = M_PI,
+        .t_range = 10,
+        .vel_range = 30,
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
     };
     DMMotorConfig(&pitchup_motor, &pitchup_cfg);
 
-    MotorEnable((MotorBase_s *)(&pitchdown_motor));
-    MotorEnable((MotorBase_s *)(&pitchup_motor));
+    MotorEnable(&(pitchdown_motor.base));
+    MotorEnable(&(pitchup_motor.base));
+
+    AxisMitLite_Init_Config_s pitchup_axis_cfg = {
+        .motor = {
+            .get_data = getpitchup,
+            .set_ref = setpitchup,
+        },                                     // 电机接口 (set_ref/get_data)
+        .stage = AXIS_LITE_STAGE_FIXED_TORQUE, // 控制阶段
+        .delay_ms = 5000,                      // 延时时间 (ms)
+        .params = {
+            .gravity = 0.28,
+            .gear_ratio = 1,
+        },                        // 轴参数
+        .sine_params = {0},       // 正弦参数
+        .chirp_params = {0},      // 扫频参数
+        .multi_sine_params = {0}, // 多正弦叠加参数
+        .kp = 0,                  // 位置增益 (Nm/rad)
+        .kd = 0,                  // 速度增益
+    };
+    AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg);
 }
 
 ITCM_RAM void AppGimbalRun(void)
 {
-    // MotorGetData((MotorBase_s *)(&pitchdown_motor));
-    // MotorGetData((MotorBase_s *)(&pitchup_motor));
+    // getdata,setref
+    MotorGetData(&(pitchdown_motor.base));
+    // MotorGetData(&(pitchup_motor.base));
+    AxisMitLiteCalculate(&pitchup_axis);
+    MotorSetRef(&(pitchdown_motor.base), 0);
 
-    // MotorSetRef((MotorBase_s *)(&pitchdown_motor), 0);
-    // MotorSend((MotorBase_s *)(&pitchdown_motor));
-
-    // VofaSetChannel(1, pitchup_motor.base.data.position);
-    // VofaSetChannel(2, pitchup_motor.base.data.position_single);
-    // VofaSetChannel(3, pitchup_motor.base.data.speed);
-    // VofaSetChannel(4, pitchup_motor.base.data.torque);
-
-    // VofaSetChannel(5, pitchdown_motor.base.data.position);
-    // VofaSetChannel(6, pitchdown_motor.base.data.position_single);
-    // VofaSetChannel(7, pitchdown_motor.base.data.speed);
-    // VofaSetChannel(8, pitchdown_motor.base.data.torque);
+    // send
+    MotorSend(&(pitchdown_motor.base));
+    MotorSend(&(pitchup_motor.base));
 
     VofaSend();
 }
