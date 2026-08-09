@@ -25,6 +25,7 @@
 #define DRV_MAHONY_USED               // Mahony 姿态解算
 #define DRV_DJIMOTOR_USED             // DJI 电机驱动
 #define DRV_DMMOTOR_USED              // DM 电机驱动
+#define DRV_RSMOTOR_USED              // RS05 电机驱动（灵足时代，MIT 协议）
 #define BMI088_HEAT_USED              // BMI088 加热（TIM8 OPM+RCR 24V 硬件安全关断）
 #define DRV_AXIS_MIT_LITE_USED        // 单轴 MIT 关节控制
 #define DAEMON_USED                   // Daemon 看门狗
