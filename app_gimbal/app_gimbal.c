@@ -8,6 +8,8 @@
 #include "drv_rsmotor.h"
 #include "drv_vofa.h"
 #include "drv_axis_mit_lite.h"
+//
+#include "bsp_assert.h"
 
 // 实例
 DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
@@ -25,9 +27,9 @@ static float yaw_motor_setref = 0;
 void AppGimbalInit(void)
 {
     // 注册 CAN 实例（下pitch、上pitch 共用 CAN_2）
-    DMMotorRegister(&pitchdown_motor);
-    DMMotorRegister(&pitchup_motor);
-    RSMotorRegister(&yaw_motor);
+    BSP_ASSERT_APP_CALL(DMMotorRegister(&pitchdown_motor));
+    BSP_ASSERT_APP_CALL(DMMotorRegister(&pitchup_motor));
+    BSP_ASSERT_APP_CALL(RSMotorRegister(&yaw_motor));
 
     // 配置下pitch
     DMMotor_Config_s pitchdown_cfg = {
@@ -61,7 +63,7 @@ void AppGimbalInit(void)
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
     };
-    DMMotorConfig(&pitchdown_motor, &pitchdown_cfg);
+    BSP_ASSERT_APP_CALL(DMMotorConfig(&pitchdown_motor, &pitchdown_cfg));
 
     // 配置上pitch
     DMMotor_Config_s pitchup_cfg = {
@@ -95,7 +97,7 @@ void AppGimbalInit(void)
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
     };
-    DMMotorConfig(&pitchup_motor, &pitchup_cfg);
+    BSP_ASSERT_APP_CALL(DMMotorConfig(&pitchup_motor, &pitchup_cfg));
 
     // 配置yaw（RS05，量程需与灵足上位机一致：位置±12.57rad/速度±50rad/s/力矩±5.5Nm）
     RSMotor_Config_s yaw_cfg = {
@@ -129,7 +131,7 @@ void AppGimbalInit(void)
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
     };
-    RSMotorConfig(&yaw_motor, &yaw_cfg);
+    BSP_ASSERT_APP_CALL(RSMotorConfig(&yaw_motor, &yaw_cfg));
 
     MotorEnable(&(pitchdown_motor.base));
     MotorEnable(&(pitchup_motor.base));
@@ -148,7 +150,7 @@ void AppGimbalInit(void)
         .kp = 0,                  // 位置增益 (Nm/rad)
         .kd = 0,                  // 速度增益
     };
-    AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg);
+    BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 }
 
 ITCM_RAM void AppGimbalRun(void)

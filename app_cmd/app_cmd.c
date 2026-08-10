@@ -5,6 +5,7 @@
 #include "drv_dbus.h"
 //
 #include "bsp_freertos.h"
+#include "bsp_assert.h"
 
 static cmd2gimbal_data_t cmd_cmd2gimbal_data;
 static uint8_t used_remote_control; // 1：dbus，2；图传遥控，3：键鼠
@@ -14,7 +15,7 @@ DBUS_INSTANCE_DEF(dbus_inst);
 void AppCmdInit(void)
 {
     // 注册 DBUS（仅硬件绑定）
-    DBUSRegister(&dbus_inst);
+    BSP_ASSERT_APP_CALL(DBUSRegister(&dbus_inst));
 
     // 配置 DBUS（硬件映射 + 运行参数）
     DBUS_Config_s dbus_cfg = {
@@ -23,7 +24,7 @@ void AppCmdInit(void)
         .daemon_fault = DAEMON_FAULT_NONE,
         .lost_timeout_ms = 1000,
     };
-    DBUSConfig(&dbus_inst, &dbus_cfg);
+    BSP_ASSERT_APP_CALL(DBUSConfig(&dbus_inst, &dbus_cfg));
 }
 
 ITCM_RAM void AppCmdRun(void)
