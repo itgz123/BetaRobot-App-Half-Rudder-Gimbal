@@ -1,32 +1,25 @@
 #include "app_gimbal.h"
 #include "app_cfg.h"
+#include "app.h"
+#include "robot_def.h"
 //
 #include "drv_motor_base.h"
 #include "drv_dmmotor.h"
 #include "drv_rsmotor.h"
 #include "drv_vofa.h"
 #include "drv_axis_mit_lite.h"
-#include "robot_def.h"
 
-// yaw_motor; // yaw电机
+// 实例
 DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
 DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
 RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
 static AxisMitLiteInstance pitchup_axis;
+static cmd2gimbal_data_t gimbal_cmd2gimbal_data; // cmd2gimbal
 
-/* 私有函数 */
-// pitchup方法
-static void setpitchup(float ref)
-{
-
-    MotorSetRef(&(pitchup_motor.base), ref);
-}
-static MotorData_s getpitchup(void)
-{
-    MotorData_s data = MotorGetData(&(pitchup_motor.base));
-    data.position = (pitchup_motor.base.data_all.data.position - pitchup_position_0) - (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
-    return data;
-}
+// 数据
+static float pitchdown_motor_setref = 0;
+static float pitchup_motor_setref = 0;
+static float yaw_motor_setref = 0;
 
 /* 外部函数 */
 void AppGimbalInit(void)
@@ -143,10 +136,6 @@ void AppGimbalInit(void)
     MotorEnable(&(yaw_motor.base));
 
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
-        .motor = {
-            .get_data = getpitchup,
-            .set_ref = setpitchup,
-        },                                     // 电机接口 (set_ref/get_data)
         .stage = AXIS_LITE_STAGE_FIXED_TORQUE, // 控制阶段
         .delay_ms = 5000,                      // 延时时间 (ms)
         .params = {
@@ -164,18 +153,58 @@ void AppGimbalInit(void)
 
 ITCM_RAM void AppGimbalRun(void)
 {
-    // getdata,setref
+    // 接收消息
+    xQueueReceive(cmd2gimbal_queue_handle, &gimbal_cmd2gimbal_data, 0);
+
+    // 计算当前状态
     MotorGetData(&(pitchdown_motor.base));
-    // MotorGetData(&(pitchup_motor.base));
-    MotorGetData(&(yaw_motor.base));
-    AxisMitLiteCalculate(&pitchup_axis);
-    MotorSetRef(&(pitchdown_motor.base), 0);
-    MotorSetRef(&(yaw_motor.base), 0);
+    MotorData_s pitchup_mdata = MotorGetData(&(pitchup_motor.base));
+    pitchup_mdata.position = (pitchup_motor.base.data_all.data.position - pitchup_position_0) - (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
+    MotorData_s yaw_mdata = MotorGetData(&(yaw_motor.base));
+
+    // setref
+    pitchup_motor_setref = 0;
+    pitchdown_motor_setref = 0;
+    yaw_motor_setref = 0;
+    // setref-pitchup
+    if (enable == gimbal_cmd2gimbal_data.state)
+    {
+        pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_mdata);
+    }
+    // setref-pitchdown
+    if (enable == gimbal_cmd2gimbal_data.state)
+    {
+        // // 固定值+重力前馈+速度误差项+pitchup力矩单向叠加
+        // float temp = 0;
+        // float temp_xishu = 0;
+        // if (pitch_up_motor_setref < 0) // pitchup要单向的
+        // {
+        //     temp = -pitch_up_motor_setref;
+        // }
+        // if (pitchdowm_axis_get_x < 50.0f) // 立起来就不要速度项了，但是在这个临界角度会问题
+        // {
+        //     temp_xishu = 1000;
+        // }
+        // pitch_down_motor_setref = 2.2f +                                            // 固定值
+        //                           0.02 * (PITCHDOWN_RANGE - pitchdowm_axis_get_x) + // 约等于重力前馈
+        //                           temp_xishu * (1.2e-4 - pitchdowm_axis_get_v) +    // 速度误差项
+        //                           temp;                                             // pitchup单向
+    }
+    // setref-yaw
+    if (enable == gimbal_cmd2gimbal_data.state)
+    {
+        yaw_mdata = yaw_mdata; // 避免警告
+        yaw_motor_setref = 0;
+    }
 
     // send
+    MotorSetRef(&(pitchup_motor.base), pitchup_motor_setref);
+    MotorSetRef(&(pitchdown_motor.base), pitchdown_motor_setref);
+    MotorSetRef(&(yaw_motor.base), yaw_motor_setref);
     MotorSend(&(pitchdown_motor.base));
     MotorSend(&(pitchup_motor.base));
     MotorSend(&(yaw_motor.base));
 
+    // 其他
     VofaSend();
 }
