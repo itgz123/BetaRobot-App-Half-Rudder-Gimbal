@@ -14,6 +14,9 @@
 #define BSP_DWT_USED                  // DWT 高精度定时器（系统时钟基础）
 #define BSP_GPIO_USED                 // GPIO 管理 + EXTI 分发
 #define BSP_MATH_USED                 // 数学库（向量/矩阵/四元数/三角函数）
+#define BSP_MATH_TRIG_LUT_USED        // 自研查表三角函数 BSP_Math_*LUT（不定义则表不编译、接口不可用）
+#define BSP_MATH_TRIG_LUT_SPEED 1     // LUT 速度：0=四分之一表(省flash/象限映射) 1=2π全周期表(无象限映射/更快)
+#define BSP_MATH_TRIG_LUT_PREC 3      // LUT 精度：0=低 1=中 2=高 3=满精度(误差<ε=2^-23)
 #define BSP_FREERTOS_USED             // FreeRTOS 静态创建封装
 #define BSP_SPI_USED                  // SPI (BMI088 / LCD)
 #define BSP_TIM_USED                  // 定时器 (PWM / 编码器)
