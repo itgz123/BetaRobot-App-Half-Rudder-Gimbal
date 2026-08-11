@@ -56,7 +56,7 @@ void AppGimbalInit(void)
         .pid_angle_setting = {},
         .pid_speed_setting = {},
         .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
-        .speed_lpf_rc = 0,
+        .speed_lpf_rc = 0.1,
         .pos_max = M_PI,
         .t_range = 10,
         .vel_range = 30,
@@ -159,12 +159,13 @@ ITCM_RAM void AppGimbalRun(void)
     xQueueReceive(cmd2gimbal_queue_handle, &gimbal_cmd2gimbal_data, 0);
 
     // 计算当前状态
-    MotorGetData(&(pitchdown_motor.base));
+    MotorData_s pitchdown_mdata = MotorGetData(&(pitchdown_motor.base));
     MotorData_s pitchup_mdata = MotorGetData(&(pitchup_motor.base));
     pitchup_mdata.position = (pitchup_motor.base.data_all.data.position - pitchup_position_0) - (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
     MotorData_s yaw_mdata = MotorGetData(&(yaw_motor.base));
 
     // setref
+    // 清零
     pitchup_motor_setref = 0;
     pitchdown_motor_setref = 0;
     yaw_motor_setref = 0;
@@ -176,21 +177,21 @@ ITCM_RAM void AppGimbalRun(void)
     // setref-pitchdown
     if (enable == gimbal_cmd2gimbal_data.state)
     {
-        // // 固定值+重力前馈+速度误差项+pitchup力矩单向叠加
-        // float temp = 0;
-        // float temp_xishu = 0;
-        // if (pitch_up_motor_setref < 0) // pitchup要单向的
-        // {
-        //     temp = -pitch_up_motor_setref;
-        // }
-        // if (pitchdowm_axis_get_x < 50.0f) // 立起来就不要速度项了，但是在这个临界角度会问题
-        // {
-        //     temp_xishu = 1000;
-        // }
-        // pitch_down_motor_setref = 2.2f +                                            // 固定值
-        //                           0.02 * (PITCHDOWN_RANGE - pitchdowm_axis_get_x) + // 约等于重力前馈
-        //                           temp_xishu * (1.2e-4 - pitchdowm_axis_get_v) +    // 速度误差项
-        //                           temp;                                             // pitchup单向
+        // 固定值+重力前馈+速度误差项+pitchup力矩单向叠加
+        float diejia_pitchup_motor_setref = 0; // 要叠加在pitchdown的力矩
+        float pitchdown_kd = 0;
+        if (pitchup_motor_setref < 0) // pitchup要单向的
+        {
+            diejia_pitchup_motor_setref = -pitchup_motor_setref;
+        }
+        if (pitchdown_mdata.position < pitchdown_position_max - 0.2) // 立起来就不要速度项了，但是在这个临界角度会问题
+        {
+            pitchdown_kd = 2;
+        }
+        pitchdown_motor_setref = 2.2 +                                                       // 固定值
+                                 1.0 * (pitchdown_position_max - pitchdown_mdata.position) + // 约等于重力前馈
+                                 pitchdown_kd * (2 - pitchdown_mdata.speed) +                // 速度误差项
+                                 diejia_pitchup_motor_setref;                                // pitchup单向
     }
     // setref-yaw
     if (enable == gimbal_cmd2gimbal_data.state)

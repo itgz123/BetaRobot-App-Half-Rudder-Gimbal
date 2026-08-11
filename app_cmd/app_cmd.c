@@ -41,7 +41,7 @@ ITCM_RAM void AppCmdRun(void)
 
     if (1 == used_remote_control) // 使用dbus遥控
     {
-        if (DBUS_SW_UP == dbus_inst.dbus_data.s1)
+        if (DBUS_SW_MID == dbus_inst.dbus_data.s1)
         {
             cmd_cmd2gimbal_data.state = enable;
         }
