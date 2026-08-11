@@ -27,8 +27,8 @@
 #define COMM_TEST_TX_SIZE 8         /* 发送 payload 大小 */
 #define COMM_TEST_FRAME_HEADER 0xAA /* 首字节，用于接收侧识别本测试帧 */
 
-/* 一条对话：接收 PROTO_RAW（8B） + 发送 PROTO_RAW（8B），收发可不同 */
-COMM_DEF(uart_comm, MEDIA_USART, PROTO_RAW, PROTO_RAW, COMM_TEST_RX_SIZE, COMM_TEST_TX_SIZE);
+/* 一条对话：接收 PROTO_RAW（8B） + 发送 PROTO_RAW（8B），收发可不同，ISR 直解 */
+COMM_DEF(uart_comm, MEDIA_USART, PROTO_RAW, PROTO_RAW, COMM_TEST_RX_SIZE, COMM_TEST_TX_SIZE, UNPACK_IN_ISR);
 
 static void CommTestOnFrame(const uint8_t *payload)
 {
