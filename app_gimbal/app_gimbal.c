@@ -138,14 +138,25 @@ void AppGimbalInit(void)
     MotorEnable(&(yaw_motor.base));
 
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
-        .stage = AXIS_LITE_STAGE_FIXED_TORQUE, // 控制阶段
-        .delay_ms = 5000,                      // 延时时间 (ms)
+        .stage = AXIS_LITE_STAGE_IDENTIFY, // 控制阶段
+        .delay_ms = 5000,                  // 延时时间 (ms)
         .params = {
             .gravity = 0.28,
             .gear_ratio = 1,
-        },                        // 轴参数
-        .sine_params = {0},       // 正弦参数
-        .chirp_params = {0},      // 扫频参数
+            .inertia = 0.008f, // kg·m²
+            .friction_coulomb_pos = 0.02f,
+            .friction_coulomb_neg = 0.0f,
+            .friction_viscous_pos = 0.05f, // Nm·s/rad
+            .friction_viscous_neg = 0.06f,
+        },                  // 轴参数
+        .sine_params = {0}, // 正弦参数
+        .chirp_params = {
+            .amplitude_start = 0.1,
+            .amplitude_end = 3,
+            .duration = 15,
+            .start_freq = 1,
+            .end_freq = 8,
+        },                        // 扫频参数
         .multi_sine_params = {0}, // 多正弦叠加参数
         .kp = 0,                  // 位置增益 (Nm/rad)
         .kd = 0,                  // 速度增益
