@@ -30,9 +30,9 @@
 /* 一条对话：接收 PROTO_RAW（8B） + 发送 PROTO_RAW（8B），收发可不同 */
 COMM_DEF(uart_comm, MEDIA_USART, PROTO_RAW, PROTO_RAW, COMM_TEST_RX_SIZE, COMM_TEST_TX_SIZE);
 
-static void CommTestOnFrame(CommProto *proto, const uint8_t *payload)
+static void CommTestOnFrame(const uint8_t *payload)
 {
-    (void)proto;
+    (void)payload; /* 目前只测试发送，还没消费接收 */
 }
 
 void AppShootInit(void)
