@@ -138,8 +138,8 @@ void AppGimbalInit(void)
     MotorEnable(&(yaw_motor.base));
 
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
-        .stage = AXIS_LITE_STAGE_IDENTIFY, // 控制阶段
-        .delay_ms = 5000,                  // 延时时间 (ms)
+        .stage = AXIS_LITE_STAGE_IDENTIFY_OLS, // 控制阶段
+        .delay_ms = 5000,                      // 延时时间 (ms)
         .params = {
             .gravity = 0.28,
             .gear_ratio = 1,
@@ -148,8 +148,11 @@ void AppGimbalInit(void)
             .friction_coulomb_neg = 0.0f,
             .friction_viscous_pos = 0.05f, // Nm·s/rad
             .friction_viscous_neg = 0.06f,
-        },                  // 轴参数
-        .sine_params = {0}, // 正弦参数
+        }, // 轴参数
+        .sine_params = {
+            .amplitude = 0.1,
+            .freq = 2,
+        }, // 正弦参数
         .chirp_params = {
             .amplitude_start = 0.1,
             .amplitude_end = 3,
@@ -220,5 +223,8 @@ ITCM_RAM void AppGimbalRun(void)
     MotorSend(&(yaw_motor.base));
 
     // 其他
+    VofaSetChannel(13, pitchdown_mdata.speed);
+    VofaSetChannel(14, pitchdown_mdata.position);
+    VofaSetChannel(15, pitchup_mdata.speed);
     VofaSend();
 }
