@@ -159,10 +159,14 @@ void AppGimbalInit(void)
             .duration = 15,
             .start_freq = 1,
             .end_freq = 8,
-        },                        // 扫频参数
-        .multi_sine_params = {0}, // 多正弦叠加参数
-        .kp = 0,                  // 位置增益 (Nm/rad)
-        .kd = 0,                  // 速度增益
+        }, // 扫频参数
+        .multi_sine_params = {
+            .amplitude = 0.1,
+            .duration = 1,
+            .num_freqs = 10,
+        },       // 多正弦叠加参数
+        .kp = 0, // 位置增益 (Nm/rad)
+        .kd = 0, // 速度增益
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 }
