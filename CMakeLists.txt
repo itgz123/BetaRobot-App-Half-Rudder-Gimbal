@@ -4,6 +4,7 @@ set(MODULE_SOURCES
     app_gimbal/app_gimbal.c
     app_sensor/app_sensor.c
     app_shoot/app_shoot.c
+    app_shoot/app_proto_demo.c
     # app_referee_system/app_referee_system.c
 )
 
