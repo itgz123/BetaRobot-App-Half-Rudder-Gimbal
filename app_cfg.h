@@ -29,7 +29,8 @@
 #define DRV_AXIS_MIT_LITE_USED        // 单轴 MIT 关节控制
 #define DAEMON_USED                   // Daemon 看门狗
 #define VOFA_LITE_USED                // VOFA+ JustFloat 遥测
-#define BSP_CRC_USED                  // 软件 CRC 计算
+#define BSP_CRC_USED                  // 软件 CRC 计算（Direct/GenTable/TableCalc）
+#define BSP_CRC_TABLES_USED           // 软件 CRC 常用算法 Flash 表（bsp_crc_tables.c）
 #define DRV_COMM_USED                 //
 #define LOG_GLOBAL_LIMIT 100          // 日志每秒限量
 #define AxisMitVofaLiteSetChannelUsed // 启用轴控制 VOFA 调试通道
