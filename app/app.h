@@ -9,6 +9,12 @@ void function_in_main_c(void);
 // 任务间通信
 #include <stdint.h>
 
+typedef enum : uint8_t
+{
+    disable = 0,
+    enable = 1,
+} cmd2gimbal_state; // 状态机
+
 typedef struct
 {
     uint8_t temp_unused;
@@ -23,7 +29,7 @@ typedef struct
 } gimbal2cmd_data_t;
 typedef struct
 {
-    uint8_t temp_unused;
+    cmd2gimbal_state state; // 状态机
 } cmd2gimbal_data_t;
 typedef struct
 {

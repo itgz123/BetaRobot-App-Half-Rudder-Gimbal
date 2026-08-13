@@ -8,6 +8,7 @@
 //
 #include "bsp_freertos.h"
 #include "bsp_dwt.h"
+#include "bsp_assert.h"
 
 static BMI088_Data_t imu = {0};
 static euler_t euler = {0};
@@ -22,7 +23,7 @@ MAHONY_INSTANCE_DEF(mahony);
 void AppSensorInit(void)
 {
     // 注册 BMI088（只注册子模块，Config 时配置硬件）
-    BMI088Register(&bmi088);
+    BSP_ASSERT_APP_CALL(BMI088Register(&bmi088));
 
     // 配置 BMI088（硬件枚举 + 传感器参数 + daemon）
     BMI088_Config_s bmi088_cfg = {
@@ -41,7 +42,7 @@ void AppSensorInit(void)
         .gyro_conf = BMI088_GYRO_CONF_2000_230,
         .work_mode = BMI088_MODE_INT,
     };
-    BMI088Config(&bmi088, &bmi088_cfg);
+    BSP_ASSERT_APP_CALL(BMI088Config(&bmi088, &bmi088_cfg));
 
     // 初始化 Mahony 滤波器
     Mahony_Init_Config_s mahony_cfg = {
