@@ -14,6 +14,7 @@
 #include "app_gimbal.h"
 #include "app_sensor.h"
 #include "app_shoot.h"
+#include "app_usb.h"
 
 /* 队列实例定义 */
 QUEUE_INSTANCE_DEF(cmd2shoot_queue, 1, cmd2shoot_data_t);
@@ -35,16 +36,19 @@ QueueHandle_t gimbal2sensor_queue_handle = NULL;
 #define GIMBAL_STACK_SIZE 512
 #define SENSOR_STACK_SIZE 512
 #define SHOOT_STACK_SIZE 512
+#define USB_STACK_SIZE 256
 // 任务频率设置
 #define CMD_FREQ_MS 2     // 遥控
 #define GIMBAL_FREQ_MS 1  // 云台
 #define SENSOR_FREQ_MS 1  // 传感器
 #define SHOOT_FREQ_MS 100 // 发射
+#define USB_FREQ_MS 5     // USB 回环
 /* 任务实例定义 */
 TASK_INSTANCE_DEF(cmd_task, CMD_STACK_SIZE);
 TASK_INSTANCE_DEF(gimbal_task, GIMBAL_STACK_SIZE);
 TASK_INSTANCE_DEF(sensor_task, SENSOR_STACK_SIZE);
 TASK_INSTANCE_DEF(shoot_task, SHOOT_STACK_SIZE);
+TASK_INSTANCE_DEF(usb_task, USB_STACK_SIZE);
 
 ITCM_RAM static __attribute__((noreturn)) void StartCmdTask(void *argument)
 {
@@ -110,6 +114,22 @@ ITCM_RAM static __attribute__((noreturn)) void StartShootTask(void *argument)
     }
 }
 
+ITCM_RAM static __attribute__((noreturn)) void StartUsbTask(void *argument)
+{
+    static uint64_t start;
+    static uint64_t dt;
+    LOGINFO("[freeRTOS] USB Task Start");
+    for (;;)
+    {
+        start = DWT_GetTimeUs();
+        AppUsbRun();
+        dt = DWT_GetTimeUs() - start;
+        if ((dt / 1000) > USB_FREQ_MS)
+            LOGERROR("[freeRTOS] USB Task is being DELAY! dt = %d(ms)", (dt / 1000));
+        vTaskDelay(pdMS_TO_TICKS(USB_FREQ_MS));
+    }
+}
+
 static void create_queue(void)
 {
     cmd2shoot_queue_handle = QueueRegister(&cmd2shoot_queue);
@@ -135,6 +155,7 @@ void function_in_main_c(void)
     AppGimbalInit();
     AppCmdInit();
     AppShootInit();
+    AppUsbInit();
 
     // 创建队列
     create_queue();
@@ -144,5 +165,6 @@ void function_in_main_c(void)
     TaskRegister(&gimbal_task, &(Task_Init_Config_s){.func = StartGimbalTask, .priority = 2});
     TaskRegister(&sensor_task, &(Task_Init_Config_s){.func = StartSensorTask, .priority = 3});
     TaskRegister(&shoot_task, &(Task_Init_Config_s){.func = StartShootTask, .priority = 2});
+    TaskRegister(&usb_task, &(Task_Init_Config_s){.func = StartUsbTask, .priority = 2});
     __enable_irq(); // 开启中断
 }
