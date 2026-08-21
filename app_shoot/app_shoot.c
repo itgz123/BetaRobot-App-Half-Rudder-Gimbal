@@ -18,6 +18,9 @@
  *       demo_comm 同理走 UART_7（CRC16 校验范围 = cmd + payload）。
  *       USB 接收测试：电脑发特定 100B 帧（USB 传输层拆成 2 个分包包），板子
  *       media 层按分包序号重组成完整帧后 UsbTestOnFrame 触发，全局 usb_rx_count 加一。
+ *       usb_simple 后端测试：16B 短帧（≤64B 免序号）整包透传，UsbSimpleOnFrame 触发。
+ *       ⚠️ USB 为单例（USB_INSTANCE_NUM=1）：usb_comm 与 usb_simple_comm 只能二选一
+ *          注册，另一条须注释掉 CommRegister/CommConfig。
  */
 
 #include "app_shoot.h"
@@ -29,18 +32,21 @@
 #include "drv_comm.h"
 #include "comm_media_usart.h"
 #include "comm_media_usb.h"
+#include "comm_media_usb_simple.h"
 #include "comm_proto_raw.h"
 #include "comm_proto_custom.h"
 #include "app_proto_demo.h"
 
 uint16_t test = 0;
 uint16_t usb_rx_count = 0; /* USB 接收测试计数：电脑发特定 100B 帧，收满一帧 +1 */
+uint16_t usb_simple_rx_count = 0; /* usb_simple 接收测试计数：电脑发特定 16B 短帧，收满一帧 +1 */
 
 #define COMM_TEST_RX_SIZE 8 /* 接收 payload 大小（PROTO_CUSTOM，帧长 = payload + 4） */
 #define COMM_TEST_TX_SIZE 8 /* 发送 payload 大小 */
 #define DEMO_RX_SIZE 8      /* demo 自定义协议（PROTO_DEMO）收发 payload 大小 */
 #define DEMO_TX_SIZE 8
 #define USB_COMM_SIZE 100 /* USB(CDC) 对话收发 payload 大小（RAW；>63B 触发 media 层分包发送） */
+#define USB_SIMPLE_COMM_SIZE 16 /* usb_simple 对话收发 payload 大小（RAW；≤64B 免序号整包透传） */
 
 /* 内置自定义帧协议对话：接收/发送 PROTO_CUSTOM（8B），UART_10，ISR 直解 */
 COMM_DEF(uart_comm, MEDIA_USART, CUSTOM, CUSTOM, COMM_TEST_RX_SIZE, COMM_TEST_TX_SIZE, UNPACK_IN_ISR);
@@ -49,6 +55,9 @@ COMM_DEF(demo_comm, MEDIA_USART, DEMO, DEMO, DEMO_RX_SIZE, DEMO_TX_SIZE, UNPACK_
 /* USB(CDC) 对话：接收/发送 PROTO_RAW（100B），ISR 直解。
  * 100B > 63B 触发 media 层分包：每包 = [分包序号][数据片 ≤ 63B]，序号由 media 层维护 */
 COMM_DEF(usb_comm, MEDIA_USB, RAW, RAW, USB_COMM_SIZE, USB_COMM_SIZE, UNPACK_IN_ISR);
+/* usb_simple 后端（短帧免序号）：16B ≤ 64B，USB 传输层整包透传不带分包序号，
+ * 与 usb_comm 的最大差别。USB 单例（USB_INSTANCE_NUM=1），二者只能二选一启用 */
+COMM_DEF(usb_simple_comm, MEDIA_USB_SIMPLE, RAW, RAW, USB_SIMPLE_COMM_SIZE, USB_SIMPLE_COMM_SIZE, UNPACK_IN_ISR);
 
 static void CommTestOnFrame(const uint8_t *payload)
 {
@@ -76,6 +85,14 @@ static void UsbTestOnFrame(const uint8_t *payload)
      * payload[0] 打印用于核对收到的正是电脑发送的特定内容（如首字节 0xAA）。 */
     usb_rx_count++;
     LOGINFO("[app_shoot] usb rx payload0=%u cnt=%u", (unsigned)payload[0], (unsigned)usb_rx_count);
+}
+
+/* usb_simple 对话出帧回调：RAW 协议直接收 16B 完整协议帧（短帧免序号，整包透传），
+ * 全局计数 +1。电脑发特定 16B 帧（不带序号）即可触发。 */
+static void UsbSimpleOnFrame(const uint8_t *payload)
+{
+    usb_simple_rx_count++;
+    LOGINFO("[app_shoot] usb_simple rx payload0=%u cnt=%u", (unsigned)payload[0], (unsigned)usb_simple_rx_count);
 }
 
 void AppShootInit(void)
@@ -111,12 +128,22 @@ void AppShootInit(void)
     };
     CommRegister(&usb_comm);
     CommConfig(&usb_comm, &usb_cfg);
+
+    /* usb_simple 后端（短帧免序号）：16B ≤ 63B 整包透传。
+     * ⚠️ USB 单例（USB_INSTANCE_NUM=1），须注释掉上面 usb_comm 的注册/配置再启用本条 */
+    CommConfig_s usb_simple_cfg = {
+        .media_cfg = &(USB_Config_s){0},
+        .on_frame = UsbSimpleOnFrame,
+    };
+    CommRegister(&usb_simple_comm);
+    CommConfig(&usb_simple_comm, &usb_simple_cfg);
 }
 
 void AppShootRun(void)
 {
     uint8_t payload[COMM_TEST_TX_SIZE];
     uint8_t usb_payload[USB_COMM_SIZE];
+    uint8_t usb_simple_payload[USB_SIMPLE_COMM_SIZE];
 
     /* 构造递增 payload（协议层负责加帧头/seq/CRC8/帧尾；payload 首字节可当发送 seq 观察） */
     for (int i = 0; i < COMM_TEST_TX_SIZE; i++)
@@ -132,4 +159,10 @@ void AppShootRun(void)
     for (int i = 0; i < USB_COMM_SIZE; i++)
         usb_payload[i] = (uint8_t)i;
     CommSend(&usb_comm, usb_payload);
+
+    /* usb_simple 对话：RAW 16B payload（≤63B，media 层免序号整包透传发出）。
+     * ⚠️ USB 单例，发送前须已注册 usb_simple_comm（注释掉 usb_comm 的注册） */
+    for (int i = 0; i < USB_SIMPLE_COMM_SIZE; i++)
+        usb_simple_payload[i] = (uint8_t)i;
+    CommSend(&usb_simple_comm, usb_simple_payload);
 }
