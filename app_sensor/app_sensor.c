@@ -9,6 +9,11 @@
 #include "bsp_freertos.h"
 #include "bsp_dwt.h"
 #include "bsp_assert.h"
+//
+#include "drv_comm.h"
+#include "comm_media_usb_simple.h"
+#include "app_proto_visual.h"
+#include <string.h>
 
 static BMI088_Data_t imu = {0};
 static euler_t euler = {0};
@@ -19,6 +24,21 @@ static vector3_t gyro;
 static vector3_t acc;
 BMI088_INSTANCE_DEF(bmi088);
 MAHONY_INSTANCE_DEF(mahony);
+
+/* 最新视觉接收帧：USB 接收回调同步 memcpy 更新，业务层（云台等）只读引用 */
+vision_recv_t vision_recv_data = {0};
+
+/* 视觉通信对话：MEDIA_USB_SIMPLE 短帧免序号（50B/57B ≤ 64B 单包透传），
+ * 收发协议 VISUAL（接收 payload 48B / 发送 payload 55B；media 缓冲自动 = 50/57 对齐原帧长）。
+ * 发送由业务层填充 vision_send_t 后 CommSend(&vis_comm, (uint8_t *)&send)。 */
+COMM_DEF(vis_comm, MEDIA_USB_SIMPLE, VISUAL, VISUAL, 48, 55, UNPACK_IN_ISR);
+
+/* 视觉接收出帧回调（UNPACK_IN_ISR：payload 指向接收缓冲，回调返回后即被覆盖，
+ * 必须同步拷贝解析）。payload = 48B 帧体（含 cmd_ID），memcpy 到 packed 结构体即得业务字段 */
+static void VisionRecvOnFrame(const uint8_t *payload)
+{
+    memcpy(&vision_recv_data, payload, sizeof(vision_recv_data));
+}
 
 void AppSensorInit(void)
 {
@@ -50,6 +70,16 @@ void AppSensorInit(void)
         .ki = 0.0f,
     };
     MahonyInit(&mahony, &mahony_cfg);
+
+    // 视觉通信（USB CDC 虚拟串口）：登记协议后端 + 注册/配置 comm。
+    // 接收回调同步更新 vision_recv_data；发送由业务层填充 vision_send_t 后 CommSend。
+    CommProtoRegisterBackend(&g_visual_backend); /* 登记 VISUAL 后端，须在 CommRegister 之前 */
+    CommConfig_s vis_cfg = {
+        .media_cfg = &(USB_Config_s){0}, /* USB 无运行期参数（接收钩子由 media 层强制接管） */
+        .on_frame = VisionRecvOnFrame,
+    };
+    CommRegister(&vis_comm);
+    CommConfig(&vis_comm, &vis_cfg);
 }
 
 ITCM_RAM void AppSensorRun(void)
