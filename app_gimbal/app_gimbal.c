@@ -190,7 +190,8 @@ ITCM_RAM void AppGimbalRun(void)
     // setref-pitchup
     if (enable == gimbal_cmd2gimbal_data.state)
     {
-        pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_mdata);
+        AxisMitLiteRef_s pitchup_ref = {0}; // 外部设定值（NORMAL 阶段使用）
+        pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_mdata, &pitchup_ref);
     }
     // setref-pitchdown
     if (enable == gimbal_cmd2gimbal_data.state)

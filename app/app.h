@@ -3,18 +3,38 @@
 
 #include "bsp_freertos.h"
 
-/* 任务创建函数 */
+/*============================================
+ *              任务创建函数
+ *============================================*/
 void function_in_main_c(void);
 
-// 任务间通信
+/*============================================
+ *              队列句柄外部声明
+ *============================================*/
+extern QueueHandle_t cmd2shoot_queue_handle;
+extern QueueHandle_t shoot2cmd_queue_handle;
+extern QueueHandle_t gimbal2cmd_queue_handle;
+extern QueueHandle_t cmd2gimbal_queue_handle;
+extern QueueHandle_t sensor2gimbal_queue_handle;
+extern QueueHandle_t gimbal2sensor_queue_handle;
+
+/*============================================
+ *              任务间通信
+ *============================================*/
 #include <stdint.h>
 
+/*============================================
+ *              枚举
+ *============================================*/
 typedef enum : uint8_t
 {
     disable = 0,
     enable = 1,
 } cmd2gimbal_state; // 状态机
 
+/*============================================
+ *              结构体
+ *============================================*/
 typedef struct
 {
     uint8_t temp_unused;
@@ -30,6 +50,12 @@ typedef struct
 typedef struct
 {
     cmd2gimbal_state state; // 状态机
+    float pitch_x;          // pitch轴设定位置
+    float pitch_v;          // pitch轴设定速度
+    float pitch_a;          // pitch轴设定加速度
+    float yaw_x;            // yaw轴设定位置
+    float yaw_v;            // yaw轴设定速度
+    float yaw_a;            // yaw轴设定加速度
 } cmd2gimbal_data_t;
 typedef struct
 {
@@ -39,15 +65,6 @@ typedef struct
 {
     uint8_t temp_unused;
 } gimbal2sensor_data_t;
-/*============================================
- *              队列句柄外部声明
- *============================================*/
-extern QueueHandle_t cmd2shoot_queue_handle;
-extern QueueHandle_t shoot2cmd_queue_handle;
-extern QueueHandle_t gimbal2cmd_queue_handle;
-extern QueueHandle_t cmd2gimbal_queue_handle;
-extern QueueHandle_t sensor2gimbal_queue_handle;
-extern QueueHandle_t gimbal2sensor_queue_handle;
 
 /*============================================
  *            视觉通信协议数据结构
