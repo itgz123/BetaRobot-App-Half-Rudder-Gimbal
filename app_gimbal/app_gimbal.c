@@ -90,7 +90,7 @@ void AppGimbalInit(void)
         .pid_angle_setting = {},
         .pid_speed_setting = {},
         .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
-        .speed_lpf_rc = 0.1,
+        .speed_lpf_rc = 0.004, // 截止~40Hz, kp=40时ωn=11.3Hz总滞后140°裕度30° (电机8.6ms延迟限定了高kp必振荡)
         .pos_max = M_PI,
         .t_range = 10,
         .vel_range = 30,
@@ -141,16 +141,16 @@ void AppGimbalInit(void)
         .stage = AXIS_LITE_STAGE_TUNE, // 控制阶段
         .delay_ms = 5000,              // 延时时间 (ms)
         .params = {
-            .gravity = 0.28,
+            .gravity = 0.30f, // 重力前馈系数（标定 0.28→0.30）
             .gear_ratio = 1,
-            .inertia = 0.012f, // kg·m²
+            .inertia = 0.008f, // kg·m²（标定 0.012→0.008，前馈过大导致振幅放大）
             .friction_coulomb_pos = 0.0f,
             .friction_coulomb_neg = 0.0f,
-            .friction_viscous_pos = 0.0f, // Nm·s/rad
+            .friction_viscous_pos = 0.0f,
             .friction_viscous_neg = 0.0f,
         }, // 轴参数
         .sine_params = {
-            .amplitude = 0.3,
+            .amplitude = 0.2,
             .freq = 2,
         }, // 正弦参数
         .chirp_params = {
@@ -164,9 +164,9 @@ void AppGimbalInit(void)
             .amplitude = 0.1,
             .duration = 1,
             .num_freqs = 10,
-        },       // 多正弦叠加参数
-        .kp = 0, // 位置增益 (Nm/rad)
-        .kd = 0, // 速度增益
+        },         // 多正弦叠加参数
+        .kp = 25,  // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
+        .kd = 1.0, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 }
