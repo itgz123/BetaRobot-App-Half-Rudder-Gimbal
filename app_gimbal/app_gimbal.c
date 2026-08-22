@@ -138,8 +138,8 @@ void AppGimbalInit(void)
     MotorEnable(&(yaw_motor.base));
 
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
-        .stage = AXIS_LITE_STAGE_TUNE, // 控制阶段
-        .delay_ms = 5000,              // 延时时间 (ms)
+        .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
+        .delay_ms = 5000,                // 延时时间 (ms)
         .params = {
             .gravity = 0.30f, // 重力前馈系数（标定 0.28→0.30）
             .gear_ratio = 1,
@@ -165,8 +165,8 @@ void AppGimbalInit(void)
             .duration = 1,
             .num_freqs = 10,
         },         // 多正弦叠加参数
-        .kp = 25,  // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
-        .kd = 1.0, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+        .kp = 8,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
+        .kd = 0.8, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 }
@@ -190,7 +190,12 @@ ITCM_RAM void AppGimbalRun(void)
     // setref-pitchup
     if (enable == gimbal_cmd2gimbal_data.state)
     {
-        AxisMitLiteRef_s pitchup_ref = {0}; // 外部设定值（NORMAL 阶段使用）
+        // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
+        AxisMitLiteRef_s pitchup_ref = {
+            .position = gimbal_cmd2gimbal_data.pitch_x,
+            .speed = gimbal_cmd2gimbal_data.pitch_v,
+            .acceleration = gimbal_cmd2gimbal_data.pitch_a,
+        };
         pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_mdata, &pitchup_ref);
     }
     // setref-pitchdown
@@ -228,8 +233,18 @@ ITCM_RAM void AppGimbalRun(void)
     MotorSend(&(yaw_motor.base));
 
     // 其他
+    // vofa发送
     VofaSetChannel(13, pitchdown_mdata.speed);
     VofaSetChannel(14, pitchdown_mdata.position);
     VofaSetChannel(15, pitchup_mdata.speed);
     VofaSend();
+
+    // 回传云台反馈给 cmd（规划器需要当前位置/速度）
+    gimbal2cmd_data_t gimbal2cmd_data = {
+        .pitch_position = pitchup_mdata.position,
+        .pitch_vel = pitchup_mdata.speed,
+        .yaw_position = yaw_mdata.position,
+        .yaw_vel = yaw_mdata.speed,
+    };
+    xQueueOverwrite(gimbal2cmd_queue_handle, &gimbal2cmd_data);
 }

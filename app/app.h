@@ -45,7 +45,10 @@ typedef struct
 } shoot2cmd_data_t;
 typedef struct
 {
-    uint8_t temp_unused;
+    float pitch_position; // pitch轴当前反馈位置 (rad)
+    float pitch_vel;      // pitch轴当前反馈速度 (rad/s)
+    float yaw_position;   // yaw轴当前反馈位置 (rad)
+    float yaw_vel;        // yaw轴当前反馈速度 (rad/s)
 } gimbal2cmd_data_t;
 typedef struct
 {

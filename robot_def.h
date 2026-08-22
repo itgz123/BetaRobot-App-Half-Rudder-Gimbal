@@ -11,9 +11,9 @@
 #define pitchdown_position_min -0.0045540332794189453f // 倒下
 
 // gimbal速度(rad/s)，加速度(rad/s^2)
-#define pitch_speed 1.0f
-#define pitch_acceleration 1.0f
-#define yaw_speed 1.0f
-#define yaw_acceleration 1.0f
+#define pitch_speed 10.0f
+#define pitch_acceleration 10.0f
+// #define yaw_speed 1.0f
+// #define yaw_acceleration 1.0f
 
 #endif // !__ROBOT_DEF_H
