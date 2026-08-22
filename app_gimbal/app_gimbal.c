@@ -90,7 +90,7 @@ void AppGimbalInit(void)
         .pid_angle_setting = {},
         .pid_speed_setting = {},
         .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
-        .speed_lpf_rc = 0,
+        .speed_lpf_rc = 0.1,
         .pos_max = M_PI,
         .t_range = 10,
         .vel_range = 30,
@@ -138,19 +138,19 @@ void AppGimbalInit(void)
     MotorEnable(&(yaw_motor.base));
 
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
-        .stage = AXIS_LITE_STAGE_IDENTIFY_OLS, // 控制阶段
-        .delay_ms = 5000,                      // 延时时间 (ms)
+        .stage = AXIS_LITE_STAGE_TUNE, // 控制阶段
+        .delay_ms = 5000,              // 延时时间 (ms)
         .params = {
             .gravity = 0.28,
             .gear_ratio = 1,
-            .inertia = 0.008f, // kg·m²
-            .friction_coulomb_pos = 0.02f,
+            .inertia = 0.012f, // kg·m²
+            .friction_coulomb_pos = 0.0f,
             .friction_coulomb_neg = 0.0f,
-            .friction_viscous_pos = 0.05f, // Nm·s/rad
-            .friction_viscous_neg = 0.06f,
+            .friction_viscous_pos = 0.0f, // Nm·s/rad
+            .friction_viscous_neg = 0.0f,
         }, // 轴参数
         .sine_params = {
-            .amplitude = 0.1,
+            .amplitude = 0.3,
             .freq = 2,
         }, // 正弦参数
         .chirp_params = {

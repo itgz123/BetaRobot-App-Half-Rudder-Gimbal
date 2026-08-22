@@ -41,8 +41,8 @@
 #define AxisMitVofaLiteSetChannelUsed // 启用轴控制 VOFA 调试通道
 #define GENERATE_DISASSEMBLY          // 生成反汇编文件 .lst
 #define GENERATE_READELF              // 生成 readelf 输出文件
-#define DEVELOPMENT_BOARD DM_MC02
-#define HAL_CONFIG_NAME DM_MC02
+#define DEVELOPMENT_BOARD DJI_C
+#define HAL_CONFIG_NAME DJI_C
 
 // #define UART_LOG_USED     // UART 日志输出
 
