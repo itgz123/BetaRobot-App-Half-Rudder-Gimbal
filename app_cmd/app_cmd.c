@@ -7,8 +7,17 @@
 #include "bsp_freertos.h"
 #include "bsp_assert.h"
 
+typedef enum
+{
+    no_control_e = 0,
+    dbus_e = 1,
+    photo_story_e = 2,
+    keyboard_mouse_e = 3,
+    visual_control_e = 4,
+} cmd_control_type; // 控制类型
+
 static cmd2gimbal_data_t cmd_cmd2gimbal_data;
-static uint8_t used_remote_control; // 1：dbus，2；图传遥控，3：键鼠
+static cmd_control_type used_remote_control;
 
 DBUS_INSTANCE_DEF(dbus_inst);
 
@@ -33,26 +42,29 @@ ITCM_RAM void AppCmdRun(void)
     // 现在只有dbus
     if ((dbus_inst.daemon->is_online == 1) || (dbus_inst.dbus_data.failsafe = 0))
     {
-        used_remote_control = 1;
+        used_remote_control = dbus_e;
     }
 
     // 2. 设置要发送的数据
     cmd_cmd2gimbal_data.state = disable; // 先失能
 
-    if (1 == used_remote_control) // 使用dbus遥控
+    if (dbus_e == used_remote_control) // 使用dbus遥控
     {
         if (DBUS_SW_MID == dbus_inst.dbus_data.s1)
         {
             cmd_cmd2gimbal_data.state = enable;
         }
     }
-    else if (2 == used_remote_control)
+    else if (photo_story_e == used_remote_control) // 使用图传遥控
     {
     }
-    else if (3 == used_remote_control)
+    else if (keyboard_mouse_e == used_remote_control) // 使用图传键鼠
     {
     }
-    else
+    else if (visual_control_e == used_remote_control) // 使用视觉
+    {
+    }
+    else // 全部失效
     {
         cmd_cmd2gimbal_data.state = disable;
     }
