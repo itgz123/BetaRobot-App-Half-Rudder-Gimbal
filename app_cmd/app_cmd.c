@@ -53,7 +53,6 @@ static void dbus_control(void)
     PlannerInput_s in;
     PlannerOutput_s out;
 
-    // pitch：右摇杆上下 ch[1]（目标指令 = 通道值 -1~1，带死区，规划器内部按 max_speed 缩放）
     float pitch_ch = dbus_inst.dbus_data.ch[3];
     pitch_ch = (BSP_Math_Fabs(pitch_ch) < DEADZONE) ? 0.0f : pitch_ch;
     in.current_position = cmd_gimbal2cmd_data.pitch_position;
@@ -65,17 +64,16 @@ static void dbus_control(void)
     cmd_cmd2gimbal_data.pitch_v = out.speed;
     cmd_cmd2gimbal_data.pitch_a = out.acceleration;
 
-    // // yaw：右摇杆左右 ch[0]（目标指令 = 通道值 -1~1，带死区）
-    // float yaw_ch = -dbus_inst.dbus_data.ch[2];
-    // yaw_ch = (BSP_Math_Fabs(yaw_ch) < DEADZONE) ? 0.0f : yaw_ch;
-    // in.current_position = cmd_gimbal2cmd_data.yaw_position;
-    // in.current_speed = cmd_gimbal2cmd_data.yaw_vel;
-    // in.current_acceleration = 0.0f;
-    // in.target_cmd = yaw_ch;
-    // PlannerCalculate(&yaw_planner, &in, &out);
-    // cmd_cmd2gimbal_data.yaw_x = out.position;
-    // cmd_cmd2gimbal_data.yaw_v = out.speed;
-    // cmd_cmd2gimbal_data.yaw_a = out.acceleration;
+    float yaw_ch = dbus_inst.dbus_data.ch[2];
+    yaw_ch = (BSP_Math_Fabs(yaw_ch) < DEADZONE) ? 0.0f : yaw_ch;
+    in.current_position = cmd_gimbal2cmd_data.yaw_position;
+    in.current_speed = cmd_gimbal2cmd_data.yaw_vel;
+    in.current_acceleration = 0.0f;
+    in.target_cmd = yaw_ch;
+    PlannerCalculate(&yaw_planner, &in, &out);
+    cmd_cmd2gimbal_data.yaw_x = out.position;
+    cmd_cmd2gimbal_data.yaw_v = out.speed;
+    cmd_cmd2gimbal_data.yaw_a = out.acceleration;
 }
 static void photo_story_control(void)
 {
@@ -123,16 +121,14 @@ void AppCmdInit(void)
     };
     BSP_ASSERT_APP_CALL(PlannerInit(&pitch_planner, &pitch_cfg));
 
-    //     Planner_Init_Config_s yaw_cfg = {
-    //         .position_mode = PLANNER_POS_WRAP, // yaw 无限旋转 → 归一化
-    //         .pos_limit_min = -M_PI,
-    //         .pos_limit_max = M_PI,
-    //         .max_speed = yaw_speed,
-    //         .max_acc = yaw_acceleration,
-    //     };
-    //     BSP_ASSERT_APP_CALL(PlannerInit(&yaw_planner, &yaw_cfg));
-
-    (void)yaw_planner; // yaw 规划暂未启用（上方 yaw 初始化被注释），避免未使用警告
+    Planner_Init_Config_s yaw_cfg = {
+        .position_mode = PLANNER_POS_WRAP, // yaw 无限旋转 → 归一化
+        .pos_limit_min = -M_PI,
+        .pos_limit_max = M_PI,
+        .max_speed = yaw_speed,
+        .max_acc = yaw_acceleration,
+    };
+    BSP_ASSERT_APP_CALL(PlannerInit(&yaw_planner, &yaw_cfg));
 }
 
 ITCM_RAM void AppCmdRun(void)

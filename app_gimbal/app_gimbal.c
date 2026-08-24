@@ -173,9 +173,9 @@ void AppGimbalInit(void)
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 
     AxisMitLite_Init_Config_s yaw_axis_cfg = {
-        .stage = AXIS_LITE_STAGE_TUNE, // 控制阶段
-        .delay_ms = 5000,              // 延时时间 (ms)
-        .vofa_enable = 1,              // 该轴写 VOFA 12 通道调试（多轴实例仅一个置 1）
+        .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
+        .delay_ms = 5000,                // 延时时间 (ms)
+        .vofa_enable = 1,                // 该轴写 VOFA 12 通道调试（多轴实例仅一个置 1）
         .params = {
             .gravity = 0.0f,
             .gear_ratio = 1,
@@ -200,9 +200,9 @@ void AppGimbalInit(void)
             .amplitude = 0.1,
             .duration = 1,
             .num_freqs = 10,
-        },        // 多正弦叠加参数
-        .kp = 48, // 位置增益
-        .kd = 3,  // 速度增益
+        },         // 多正弦叠加参数
+        .kp = 48,  // 位置增益
+        .kd = 0.8, // 速度增益
         // yaw 是 WRAP 环绕轴（±π 归一化）：误差需取最短路径，否则边界处跳变
         .error_normalize_range = 2.0f * M_PI, // 误差 wrap 到 [-π, π)
         .error_normalize_enable = 1,          // 启用环绕误差归一化
