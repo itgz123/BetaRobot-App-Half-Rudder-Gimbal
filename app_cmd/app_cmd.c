@@ -1,15 +1,20 @@
 #include "app_cmd.h"
 #include "app_cfg.h"
 #include "app.h"
-#include "app_sensor.h" // vision_recv_data
-#include "robot_def.h"  // gimbal限位/速度/加速度宏
+#include "app_proto_visual.h"
+#include "robot_def.h" // gimbal限位/速度/加速度宏
 //
 #include "drv_dbus.h"
 #include "drv_planner.h"
+#include "drv_comm.h"
+#include "comm_media_usb_simple.h"
 //
 #include "bsp_freertos.h"
 #include "bsp_assert.h"
 #include "bsp_math.h"
+#include "bsp_dwt.h"
+//
+#include <string.h>
 
 /*============================================
  *              宏
@@ -41,9 +46,57 @@ static cmd_control_type used_remote_control; // 控制类型
 
 DBUS_INSTANCE_DEF(dbus_inst); // dbus实例
 
+// 视觉的usb虚拟串口
+static vision_recv_t vision_recv_data = {0};
+static vision_send_t vision_send_data = {0};
+/* 验证：枚举类型须保持协议字节布局（48B/55B） */
+_Static_assert(sizeof(vision_recv_t) == 48, "vision_recv_t size must be 48");
+_Static_assert(sizeof(vision_send_t) == 55, "vision_send_t size must be 55");
+/* 视觉通信对话：MEDIA_USB_SIMPLE 短帧免序号（50B/57B ≤ 64B 单包透传），
+ * 收发协议 VISUAL（接收 payload 48B / 发送 payload 55B；media 缓冲自动 = 50/57 对齐原帧长）。
+ * 发送由业务层填充 vision_send_t 后 CommSend(&vis_comm, (uint8_t *)&send)。 */
+COMM_DEF(vis_comm, MEDIA_USB_SIMPLE, VISUAL, VISUAL, sizeof(vision_recv_t), sizeof(vision_send_t), UNPACK_IN_ISR);
+
 /*============================================
  *              私有函数
  *============================================*/
+/* 视觉接收出帧回调（UNPACK_IN_ISR：payload 指向接收缓冲，回调返回后即被覆盖，
+ * 必须同步拷贝解析）。payload = 48B 帧体（含 cmd_ID），memcpy 到 packed 结构体即得业务字段 */
+static void VisionRecvOnFrame(const uint8_t *payload)
+{
+    memcpy(&vision_recv_data, payload, sizeof(vision_recv_data));
+}
+/* 板→视觉 状态回传：填充 vision_send_t（55B）后 CommSend。
+ * 单位约定：角度字段 deg；角速度 rad/s；速度 m/s。
+ * 可得数据取真实值（云台反馈来自 gimbal2cmd 队列）；暂无数据源的字段置 0。 */
+static void VisionSend(void)
+{
+    vision_send_data.cmd_ID = VISUAL_CMD_TX;
+    vision_send_data.time_stamp = (uint32_t)(DWT_GetTimeUs() / 1000); /* 板卡时间戳 ms */
+    if (visual_control_e == used_remote_control)
+    {
+        vision_send_data.mode = vision_mode_auto_aim_e;
+    }
+    else
+    {
+        vision_send_data.mode = vision_mode_idle_e;
+    }
+    vision_send_data.yaw = RAD_TO_DEG(cmd_gimbal2cmd_data.yaw_position);
+    vision_send_data.pitch_base_relative = RAD_TO_DEG(cmd_gimbal2cmd_data.pitch_position);
+    vision_send_data.pitch_down = RAD_TO_DEG(cmd_gimbal2cmd_data.pitch_down_position); // 下pitch位姿角 (rad→deg)
+    vision_send_data.yaw_vel = cmd_gimbal2cmd_data.yaw_vel;
+    vision_send_data.pitch_base_relative_vel = cmd_gimbal2cmd_data.pitch_vel;
+    // 暂无数据：
+    vision_send_data.roll = 0;     // IMU roll（暂未通过队列回传）
+    vision_send_data.roll_vel = 0; // IMU roll 角速度（暂未回传）
+    vision_send_data.v_x = 0;      // 车体 x 速度（暂无底盘反馈）
+    vision_send_data.v_y = 0;
+    vision_send_data.v_z = 0;
+    vision_send_data.bullet_speed = 0; // 弹速（暂无发射反馈）
+    vision_send_data.bullet_count = 0; // 弹量（暂无发射反馈）
+    vision_send_data.aim_color = 0;    // 瞄准敌方颜色（来自裁判系统）
+    CommSend(&vis_comm, (uint8_t *)&vision_send_data);
+}
 static void dbus_control(void)
 {
     if (DBUS_SW_MID == dbus_inst.dbus_data.s1)
@@ -83,15 +136,15 @@ static void keyboard_mouse_control(void)
 }
 static void visual_control(void)
 {
-    // cmd_cmd2gimbal_data.state = enable;
-    // // 单位约定：视觉 pitch/yaw 为 deg（转 rad）；v/a 为 rad/s、rad/s²（不转）
-    // // 坐标系：pitch 为 base-relative（与 app_gimbal 一致）；yaw 为世界系（需标定对齐电机系）
-    // cmd_cmd2gimbal_data.pitch_x = DEG_TO_RAD(vision_recv_data.pitch_base_relative);
-    // cmd_cmd2gimbal_data.pitch_v = vision_recv_data.v_pitch_base_relative;
-    // cmd_cmd2gimbal_data.pitch_a = vision_recv_data.a_pitch_base_relative;
-    // cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
-    // cmd_cmd2gimbal_data.yaw_v = vision_recv_data.v_yaw;
-    // cmd_cmd2gimbal_data.yaw_a = vision_recv_data.a_yaw;
+    cmd_cmd2gimbal_data.state = enable;
+    // 单位约定：视觉 pitch/yaw 为 deg（转 rad）；v/a 为 rad/s、rad/s²（不转）
+    // 坐标系：pitch 为 base-relative（与 app_gimbal 一致）；yaw 为世界系（需标定对齐电机系）
+    cmd_cmd2gimbal_data.pitch_x = DEG_TO_RAD(vision_recv_data.pitch_base_relative);
+    cmd_cmd2gimbal_data.pitch_v = vision_recv_data.v_pitch_base_relative;
+    cmd_cmd2gimbal_data.pitch_a = vision_recv_data.a_pitch_base_relative;
+    cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
+    cmd_cmd2gimbal_data.yaw_v = vision_recv_data.v_yaw;
+    cmd_cmd2gimbal_data.yaw_a = vision_recv_data.a_yaw;
 }
 
 /*============================================
@@ -129,6 +182,16 @@ void AppCmdInit(void)
         .max_acc = yaw_acceleration,
     };
     BSP_ASSERT_APP_CALL(PlannerInit(&yaw_planner, &yaw_cfg));
+
+    // 视觉通信（USB CDC 虚拟串口）：登记协议后端 + 注册/配置 comm。
+    // 接收回调同步更新 vision_recv_data；发送由业务层填充 vision_send_t 后 CommSend。
+    CommProtoRegisterBackend(&g_visual_backend); /* 登记 VISUAL 后端，须在 CommRegister 之前 */
+    CommConfig_s vis_cfg = {
+        .media_cfg = &(USB_Config_s){0}, /* USB 无运行期参数（接收钩子由 media 层强制接管） */
+        .on_frame = VisionRecvOnFrame,
+    };
+    CommRegister(&vis_comm);
+    CommConfig(&vis_comm, &vis_cfg);
 }
 
 ITCM_RAM void AppCmdRun(void)
@@ -139,9 +202,25 @@ ITCM_RAM void AppCmdRun(void)
     // 1. 控制源选择：
     //    dbus 在线（未丢帧/失控）时：S1 上=dbus手动，S1 中=视觉，S1 下=失能
     used_remote_control = no_control_e;
+    // 选择建立在dbus遥控在线的基础上
     if ((dbus_inst.daemon->is_online == 1) && (dbus_inst.dbus_data.failsafe == 0))
     {
-        used_remote_control = dbus_e;
+        // 这里的选择路径比较复杂
+        if (DBUS_SW_MID == dbus_inst.dbus_data.s1)
+        {
+            used_remote_control = dbus_e;
+        }
+        else if (DBUS_SW_DOWN == dbus_inst.dbus_data.s1)
+        {
+            if (vision_appear_e == vision_recv_data.appear)
+            {
+                used_remote_control = visual_control_e;
+            }
+            else
+            {
+                used_remote_control = dbus_e;
+            }
+        }
     }
 
     // 2. 设置要发送的数据（默认失能 + 设定值清零）
@@ -176,4 +255,7 @@ ITCM_RAM void AppCmdRun(void)
 
     // 3. 通过队列发送出去
     xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data);
+
+    // 4. 板→视觉 状态回传（USB 虚拟串口）
+    VisionSend();
 }

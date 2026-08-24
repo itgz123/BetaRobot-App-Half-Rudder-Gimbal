@@ -281,12 +281,13 @@ ITCM_RAM void AppGimbalRun(void)
     // vofa发送
     VofaSend();
 
-    // 回传云台反馈给 cmd（规划器需要当前位置/速度）
+    // 回传云台反馈给 cmd（规划器需要当前位置/速度；pitch_down 供视觉回传下pitch位姿角）
     gimbal2cmd_data_t gimbal2cmd_data = {
         .pitch_position = pitchup_mdata.position,
         .pitch_vel = pitchup_mdata.speed,
         .yaw_position = yaw_mdata.position,
         .yaw_vel = yaw_mdata.speed,
+        .pitch_down_position = pitchdown_mdata.position,
     };
     xQueueOverwrite(gimbal2cmd_queue_handle, &gimbal2cmd_data);
 }

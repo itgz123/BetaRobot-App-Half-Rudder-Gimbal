@@ -2,14 +2,13 @@
  * @file app_proto_visual.c
  * @brief 视觉电脑通信协议后端（PROTO_VISUAL）实现
  *
- * 帧格式（固定长度，帧 = payload + CRC16）：
+ * 帧格式（固定长度，帧 = payload + CRC16；media 层按固定帧长保证整帧，无需命令字定界）：
  *   - 发送（板→视觉）：55B payload（首字节 cmd_ID=0x02）→ 帧 57B
- *   - 接收（视觉→板）：帧 50B → 校验 cmd_ID(0x01) + CRC16 → payload 48B
+ *   - 接收（视觉→板）：帧 50B → CRC16 校验 → payload 48B
  *
  * 编解码：
  *   - VisualPack：帧体 = payload（含 cmd_ID）原样拷贝 → 尾部追加 CRC16（低字节在前）
- *   - VisualUnpack：cmd_ID 定界（data[0]==VISUAL_CMD_RX）+ CRC16 校验；
- *                   通过返回 data（payload 含 cmd_ID，业务层按偏移解析），失败返回 NULL
+ *   - VisualUnpack：CRC16 校验；通过返回 data（payload 含 cmd_ID，业务层按偏移解析），失败返回 NULL
  *   - VisualReset：无内部状态（固定长度 + 每帧独立校验），空操作
  *
  * CRC16 = 裁判系统官方算法（crc_ref.c，实际为 CRC-16/MCRF4XX）：poly 0x1021、
@@ -67,15 +66,14 @@ static int8_t VisualPack(CommProto *self, const uint8_t *payload, uint8_t *out_b
     return 0;
 }
 
-/* 解包：cmd_ID 定界（接收帧首字节须 == VISUAL_CMD_RX，对齐原项目 DecodeVision 校验）
- * + CRC16 校验（校验范围 = data[0..payload_size)）。通过返回 data（payload 含 cmd_ID）。 */
+/* 解包：仅 CRC16 校验（校验范围 = data[0..payload_size)）。
+ * 帧边界由 media 层固定帧长保证，无需 cmd_ID 定界（cmd_ID 随帧传递，仅作业务字段）。
+ * 通过返回 data（payload 含 cmd_ID），失败返回 NULL。 */
 static const uint8_t *VisualUnpack(CommProto *self, const uint8_t *data)
 {
     uint32_t crc_calc, crc_recv;
 
     if (self == NULL || data == NULL)
-        return NULL;
-    if (data[0] != VISUAL_CMD_RX) /* cmd_ID 不符：丢弃（帧定界） */
         return NULL;
 
     crc_calc = BSP_CRC_Direct(&s_visual_crc_algo, data, self->payload_size);

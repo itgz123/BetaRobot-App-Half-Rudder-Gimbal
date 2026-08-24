@@ -37,10 +37,8 @@
 /* 协议开销 = 帧尾 CRC16（2B）；整帧长 = payload_size + PROTO_VISUAL_OVERHEAD */
 #define PROTO_VISUAL_OVERHEAD 2
 
-/* 视觉线协议 cmd_ID 常量（业务层组织 payload 时使用）：
+/* 视觉线协议 cmd_ID 常量见 app.h 的 vision_cmd_e 枚举：
  *   接收帧（视觉→板）首字节 = VISUAL_CMD_RX，发送帧（板→视觉）首字节 = VISUAL_CMD_TX */
-#define VISUAL_CMD_RX 0x01
-#define VISUAL_CMD_TX 0x02
 
 /* 视觉协议派生结构体：仅编解码，不内嵌数据字段（首成员必须为 CommProto 基类） */
 typedef struct

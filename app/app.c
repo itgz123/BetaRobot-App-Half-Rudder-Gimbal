@@ -22,6 +22,8 @@ QUEUE_INSTANCE_DEF(gimbal2cmd_queue, 1, gimbal2cmd_data_t);
 QUEUE_INSTANCE_DEF(cmd2gimbal_queue, 1, cmd2gimbal_data_t);
 QUEUE_INSTANCE_DEF(sensor2gimbal_queue, 1, sensor2gimbal_data_t);
 QUEUE_INSTANCE_DEF(gimbal2sensor_queue, 1, gimbal2sensor_data_t);
+QUEUE_INSTANCE_DEF(sensor2cmd_queue, 1, sensor2cmd_data_t);
+QUEUE_INSTANCE_DEF(cmd2sensor_queue, 1, cmd2sensor_data_t);
 
 /* 队列句柄（非static，供其他模块通过 extern 访问） */
 QueueHandle_t cmd2shoot_queue_handle = NULL;
@@ -30,13 +32,15 @@ QueueHandle_t gimbal2cmd_queue_handle = NULL;
 QueueHandle_t cmd2gimbal_queue_handle = NULL;
 QueueHandle_t sensor2gimbal_queue_handle = NULL;
 QueueHandle_t gimbal2sensor_queue_handle = NULL;
+QueueHandle_t sensor2cmd_queue_handle = NULL;
+QueueHandle_t cmd2sensor_queue_handle = NULL;
 // 任务STACK大小
 #define CMD_STACK_SIZE 512
 #define GIMBAL_STACK_SIZE 512
 #define SENSOR_STACK_SIZE 512
 #define SHOOT_STACK_SIZE 512
 // 任务频率设置
-#define CMD_FREQ_MS 2     // 遥控
+#define CMD_FREQ_MS 1     // 遥控
 #define GIMBAL_FREQ_MS 1  // 云台
 #define SENSOR_FREQ_MS 1  // 传感器
 #define SHOOT_FREQ_MS 100 // 发射
@@ -118,6 +122,8 @@ static void create_queue(void)
     cmd2gimbal_queue_handle = QueueRegister(&cmd2gimbal_queue);
     sensor2gimbal_queue_handle = QueueRegister(&sensor2gimbal_queue);
     gimbal2sensor_queue_handle = QueueRegister(&gimbal2sensor_queue);
+    sensor2cmd_queue_handle = QueueRegister(&sensor2cmd_queue);
+    cmd2sensor_queue_handle = QueueRegister(&cmd2sensor_queue);
 }
 
 void function_in_main_c(void)
