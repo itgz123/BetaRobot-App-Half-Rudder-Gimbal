@@ -16,6 +16,8 @@ DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
 DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
 RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
 static AxisMitLiteInstance pitchup_axis;
+static AxisMitLiteInstance yaw_axis;
+
 static cmd2gimbal_data_t gimbal_cmd2gimbal_data; // cmd2gimbal
 
 // 数据
@@ -124,7 +126,7 @@ void AppGimbalInit(void)
         .pid_angle_setting = {},
         .pid_speed_setting = {},
         .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
-        .speed_lpf_rc = 0,
+        .speed_lpf_rc = 0.004f,
         .pos_max = 12.57f,  // RS05 默认量程
         .t_range = 5.5f,    // RS05 默认量程
         .vel_range = 50.0f, // RS05 默认量程
@@ -169,6 +171,44 @@ void AppGimbalInit(void)
         .kd = 0.6, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
+
+    AxisMitLite_Init_Config_s yaw_axis_cfg = {
+        .stage = AXIS_LITE_STAGE_TUNE, // 控制阶段
+        .delay_ms = 5000,              // 延时时间 (ms)
+        .vofa_enable = 1,              // 该轴写 VOFA 12 通道调试（多轴实例仅一个置 1）
+        .params = {
+            .gravity = 0.0f,
+            .gear_ratio = 1,
+            .inertia = 0.0095f,
+            .friction_coulomb_pos = 0.0f,
+            .friction_coulomb_neg = 0.0f,
+            .friction_viscous_pos = 0.0f,
+            .friction_viscous_neg = 0.0f,
+        }, // 轴参数
+        .sine_params = {
+            .amplitude = 0.4,
+            .freq = 2,
+        }, // 正弦参数
+        .chirp_params = {
+            .amplitude_start = 0.1,
+            .amplitude_end = 3,
+            .duration = 15,
+            .start_freq = 1,
+            .end_freq = 8,
+        }, // 扫频参数
+        .multi_sine_params = {
+            .amplitude = 0.1,
+            .duration = 1,
+            .num_freqs = 10,
+        },        // 多正弦叠加参数
+        .kp = 48, // 位置增益
+        .kd = 3,  // 速度增益
+        // yaw 是 WRAP 环绕轴（±π 归一化）：误差需取最短路径，否则边界处跳变
+        .error_normalize_range = 2.0f * M_PI, // 误差 wrap 到 [-π, π)
+        .error_normalize_enable = 1,          // 启用环绕误差归一化
+        // TUNE 正弦参考默认以延时结束时的当前位置为中心（drv 层内置），避免起始误差过大
+    };
+    BSP_ASSERT_APP_CALL(AxisMitLiteInit(&yaw_axis, &yaw_axis_cfg));
 }
 
 ITCM_RAM void AppGimbalRun(void)
@@ -220,8 +260,13 @@ ITCM_RAM void AppGimbalRun(void)
     // setref-yaw
     if (enable == gimbal_cmd2gimbal_data.state)
     {
-        yaw_mdata = yaw_mdata; // 避免警告
-        yaw_motor_setref = 0;
+        // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
+        AxisMitLiteRef_s yaw_ref = {
+            .position = gimbal_cmd2gimbal_data.yaw_x,
+            .speed = gimbal_cmd2gimbal_data.yaw_v,
+            .acceleration = gimbal_cmd2gimbal_data.yaw_a,
+        };
+        yaw_motor_setref = AxisMitLiteCalculate(&yaw_axis, &yaw_mdata, &yaw_ref);
     }
 
     // send
@@ -234,9 +279,6 @@ ITCM_RAM void AppGimbalRun(void)
 
     // 其他
     // vofa发送
-    VofaSetChannel(13, pitchdown_mdata.speed);
-    VofaSetChannel(14, pitchdown_mdata.position);
-    VofaSetChannel(15, pitchup_mdata.speed);
     VofaSend();
 
     // 回传云台反馈给 cmd（规划器需要当前位置/速度）

@@ -1,11 +1,11 @@
 #include "app_cmd.h"
 #include "app_cfg.h"
 #include "app.h"
+#include "app_sensor.h" // vision_recv_data
+#include "robot_def.h"  // gimbal限位/速度/加速度宏
 //
 #include "drv_dbus.h"
 #include "drv_planner.h"
-#include "app_sensor.h" // vision_recv_data
-#include "robot_def.h"  // gimbal限位/速度/加速度宏
 //
 #include "bsp_freertos.h"
 #include "bsp_assert.h"
@@ -131,6 +131,8 @@ void AppCmdInit(void)
     //         .max_acc = yaw_acceleration,
     //     };
     //     BSP_ASSERT_APP_CALL(PlannerInit(&yaw_planner, &yaw_cfg));
+
+    (void)yaw_planner; // yaw 规划暂未启用（上方 yaw 初始化被注释），避免未使用警告
 }
 
 ITCM_RAM void AppCmdRun(void)
