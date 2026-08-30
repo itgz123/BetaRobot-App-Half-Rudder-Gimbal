@@ -22,6 +22,7 @@
 #define BSP_TIM_USED              // 定时器 (PWM / 编码器)
 #define BSP_USART_USED            // 串口 (SBUS / VOFA / RS485)
 #define BSP_CAN_USED              // CAN (FDCAN / BXCAN, DJI 电机)
+#define BSP_CAN_LIST_LUT_USED     // CAN 接收中断标准ID LIST模式按ID查表加速（不定义则回退循环判断）
 #define DRV_PID_USED              // PID 控制器
 #define DRV_MIT_USED              // MIT PD 控制器
 #define DRV_BMI088_USED           // BMI088 IMU 驱动

@@ -47,6 +47,7 @@ void AppSensorInit(void)
         .gyro_range = BMI088_GYRO_RANGE_2000,
         .gyro_conf = BMI088_GYRO_CONF_2000_230,
         .work_mode = BMI088_MODE_INT,
+        .spi_timeout_ms = 10, // SPI IT/DMA 传输超时(ms)
     };
     BSP_ASSERT_APP_CALL(BMI088Config(&bmi088, &bmi088_cfg));
 

@@ -64,6 +64,7 @@ void AppGimbalInit(void)
         .vel_range = 30,
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
+        .timeout_ms = 1, // CAN 发送超时(ms)
     };
     BSP_ASSERT_APP_CALL(DMMotorConfig(&pitchdown_motor, &pitchdown_cfg));
 
@@ -98,6 +99,7 @@ void AppGimbalInit(void)
         .vel_range = 30,
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
+        .timeout_ms = 1, // CAN 发送超时(ms)
     };
     BSP_ASSERT_APP_CALL(DMMotorConfig(&pitchup_motor, &pitchup_cfg));
 
@@ -132,6 +134,7 @@ void AppGimbalInit(void)
         .vel_range = 50.0f, // RS05 默认量程
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
+        .timeout_ms = 1, // CAN 发送超时(ms)
     };
     BSP_ASSERT_APP_CALL(RSMotorConfig(&yaw_motor, &yaw_cfg));
 
