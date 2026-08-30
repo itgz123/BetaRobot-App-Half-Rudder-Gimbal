@@ -1,7 +1,7 @@
 #include "app.h"
 #include "app_cfg.h"
 //
-#include "bsp_uart_log.h"
+#include "bsp_log.h"
 #include "bsp_dwt.h"
 #include "bsp_math.h"
 #include "bsp_freertos.h"
@@ -133,7 +133,7 @@ void function_in_main_c(void)
     BSPInit();
     DWT_Init();
     // 其他功能
-    BSPLogInit();
+    // BSPLogInit();
     DaemonInit();
     VofaInit();
     // app
