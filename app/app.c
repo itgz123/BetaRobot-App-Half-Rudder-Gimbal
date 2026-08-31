@@ -35,10 +35,10 @@ QueueHandle_t gimbal2sensor_queue_handle = NULL;
 QueueHandle_t sensor2cmd_queue_handle = NULL;
 QueueHandle_t cmd2sensor_queue_handle = NULL;
 // 任务STACK大小
-#define CMD_STACK_SIZE 512
-#define GIMBAL_STACK_SIZE 512
-#define SENSOR_STACK_SIZE 512
-#define SHOOT_STACK_SIZE 512
+#define CMD_STACK_SIZE 1024
+#define GIMBAL_STACK_SIZE 1024
+#define SENSOR_STACK_SIZE 1024
+#define SHOOT_STACK_SIZE 1024
 // 任务频率设置
 #define CMD_FREQ_MS 1     // 遥控
 #define GIMBAL_FREQ_MS 1  // 云台
@@ -132,8 +132,7 @@ void function_in_main_c(void)
     __disable_irq(); // 关闭中断
     BSPInit();
     DWT_Init();
-    // 其他功能
-    // BSPLogInit();
+    BSPLogInit(); // 初始化日志依赖的 bsp 外设（DWT，幂等）
     DaemonInit();
     VofaInit();
     // app

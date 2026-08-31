@@ -38,12 +38,11 @@
 #define BSP_CRC_USED              // 软件 CRC 计算（Direct/GenTable/TableCalc）
 #define BSP_CRC_TABLES_USED       // 软件 CRC 常用算法 Flash 表（bsp_crc_tables.c）
 #define DRV_COMM_USED             //
-#define LOG_GLOBAL_LIMIT 100      // 日志每秒限量
+#define BSP_LOG_USED              // 日志输出
+#define LOG_UART UART_1           // 日志串口
 #define GENERATE_DISASSEMBLY      // 生成反汇编文件 .lst
 #define GENERATE_READELF          // 生成 readelf 输出文件
-#define DEVELOPMENT_BOARD DJI_C
-#define HAL_CONFIG_NAME DJI_C
-
-// #define UART_LOG_USED     // UART 日志输出
+#define DEVELOPMENT_BOARD DM_MC02
+#define HAL_CONFIG_NAME DM_MC02
 
 #endif // __APP_CFG_H
