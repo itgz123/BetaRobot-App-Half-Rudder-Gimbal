@@ -34,15 +34,28 @@
 #define BMI088_HEAT_USED          // BMI088 加热（TIM8 OPM+RCR 24V 硬件安全关断）
 #define DRV_AXIS_MIT_LITE_USED    // 单轴 MIT 关节控制
 #define DAEMON_USED               // Daemon 看门狗
-#define VOFA_LITE_USED            // VOFA+ JustFloat 遥测
+#define VOFA_USED                 // VOFA+ JustFloat 遥测
 #define BSP_CRC_USED              // 软件 CRC 计算（Direct/GenTable/TableCalc）
 #define BSP_CRC_TABLES_USED       // 软件 CRC 常用算法 Flash 表（bsp_crc_tables.c）
 #define DRV_COMM_USED             //
 #define BSP_LOG_USED              // 日志输出
-#define LOG_UART UART_1           // 日志串口
 #define GENERATE_DISASSEMBLY      // 生成反汇编文件 .lst
 #define GENERATE_READELF          // 生成 readelf 输出文件
 #define DEVELOPMENT_BOARD DM_MC02
 #define HAL_CONFIG_NAME DM_MC02
+
+// // UART 选择
+// #if DEVELOPMENT_BOARD == DM_MC02
+// #define VOFA_UART
+// #define LOG_UART
+// #elif DEVELOPMENT_BOARD == DJI_C
+// #define VOFA_UART
+// #define LOG_UART
+// #elif DEVELOPMENT_BOARD == DJI_A
+// #define VOFA_UART
+// #define LOG_UART
+// #else
+// #error "error"
+// #endif
 
 #endif // __APP_CFG_H
