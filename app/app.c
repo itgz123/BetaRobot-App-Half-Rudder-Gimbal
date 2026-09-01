@@ -15,6 +15,9 @@
 #include "app_sensor.h"
 #include "app_shoot.h"
 
+/* 日志实例定义 */
+LOG_INSTANCE_DEF(g_app_log); // app 层日志实例
+
 /* 队列实例定义 */
 QUEUE_INSTANCE_DEF(cmd2shoot_queue, 1, cmd2shoot_data_t);
 QUEUE_INSTANCE_DEF(shoot2cmd_queue, 1, shoot2cmd_data_t);
@@ -54,14 +57,14 @@ ITCM_RAM static __attribute__((noreturn)) void StartCmdTask(void *argument)
 {
     static uint64_t start;
     static uint64_t dt;
-    LOGINFO("[freeRTOS] CMD Task Start");
+    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "[freeRTOS] CMD Task Start");
     for (;;)
     {
         start = DWT_GetTimeUs();
         AppCmdRun();
         dt = DWT_GetTimeUs() - start;
         if ((dt / 1000) > CMD_FREQ_MS)
-            LOGERROR("[freeRTOS] CMD Task is being DELAY! dt = %d(ms)", (dt / 1000));
+            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "[freeRTOS] CMD Task is being DELAY! dt = %d(ms)", (dt / 1000));
         vTaskDelay(pdMS_TO_TICKS(CMD_FREQ_MS));
     }
 }
@@ -70,14 +73,14 @@ ITCM_RAM static __attribute__((noreturn)) void StartGimbalTask(void *argument)
 {
     static uint64_t start;
     static uint64_t dt;
-    LOGINFO("[freeRTOS] GIMBAL Task Start");
+    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "[freeRTOS] GIMBAL Task Start");
     for (;;)
     {
         start = DWT_GetTimeUs();
         AppGimbalRun();
         dt = DWT_GetTimeUs() - start;
         if ((dt / 1000) > GIMBAL_FREQ_MS)
-            LOGERROR("[freeRTOS] GIMBAL Task is being DELAY! dt = %d(ms)", (dt / 1000));
+            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "[freeRTOS] GIMBAL Task is being DELAY! dt = %d(ms)", (dt / 1000));
         vTaskDelay(pdMS_TO_TICKS(GIMBAL_FREQ_MS));
     }
 }
@@ -86,14 +89,14 @@ ITCM_RAM static __attribute__((noreturn)) void StartSensorTask(void *argument)
 {
     static uint64_t start;
     static uint64_t dt;
-    LOGINFO("[freeRTOS] SENSOR Task Start");
+    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "[freeRTOS] SENSOR Task Start");
     for (;;)
     {
         start = DWT_GetTimeUs();
         AppSensorRun();
         dt = DWT_GetTimeUs() - start;
         if ((dt / 1000) > SENSOR_FREQ_MS)
-            LOGERROR("[freeRTOS] SENSOR Task is being DELAY! dt = %d(ms)", (dt / 1000));
+            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "[freeRTOS] SENSOR Task is being DELAY! dt = %d(ms)", (dt / 1000));
         vTaskDelay(pdMS_TO_TICKS(SENSOR_FREQ_MS));
     }
 }
@@ -102,14 +105,14 @@ ITCM_RAM static __attribute__((noreturn)) void StartShootTask(void *argument)
 {
     static uint64_t start;
     static uint64_t dt;
-    LOGINFO("[freeRTOS] SHOOT Task Start");
+    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "[freeRTOS] SHOOT Task Start");
     for (;;)
     {
         start = DWT_GetTimeUs();
         AppShootRun();
         dt = DWT_GetTimeUs() - start;
         if ((dt / 1000) > SHOOT_FREQ_MS)
-            LOGERROR("[freeRTOS] SHOOT Task is being DELAY! dt = %d(ms)", (dt / 1000));
+            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "[freeRTOS] SHOOT Task is being DELAY! dt = %d(ms)", (dt / 1000));
         vTaskDelay(pdMS_TO_TICKS(SHOOT_FREQ_MS));
     }
 }
@@ -133,6 +136,7 @@ void function_in_main_c(void)
     BSPInit();
     DWT_Init();
     BSPLogInit(); // 初始化日志依赖的 bsp 外设（DWT，幂等）
+    BSPLogInitInstance(&g_app_log, &(LOG_Config_s){.module_name = "app"});
     DaemonInit();
     VofaInit();
     // app

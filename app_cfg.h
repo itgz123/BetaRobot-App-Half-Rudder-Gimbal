@@ -38,24 +38,25 @@
 #define BSP_CRC_USED              // 软件 CRC 计算（Direct/GenTable/TableCalc）
 #define BSP_CRC_TABLES_USED       // 软件 CRC 常用算法 Flash 表（bsp_crc_tables.c）
 #define DRV_COMM_USED             //
+#define BSP_FORMAT_USED           // 快速格式化（零除法整数转换，bsp_log 依赖）
 #define BSP_LOG_USED              // 日志输出
 #define GENERATE_DISASSEMBLY      // 生成反汇编文件 .lst
 #define GENERATE_READELF          // 生成 readelf 输出文件
 #define DEVELOPMENT_BOARD DM_MC02
 #define HAL_CONFIG_NAME DM_MC02
 
-// // UART 选择
-// #if DEVELOPMENT_BOARD == DM_MC02
-// #define VOFA_UART
-// #define LOG_UART
-// #elif DEVELOPMENT_BOARD == DJI_C
-// #define VOFA_UART
-// #define LOG_UART
-// #elif DEVELOPMENT_BOARD == DJI_A
-// #define VOFA_UART
-// #define LOG_UART
-// #else
-// #error "error"
-// #endif
+// UART 选择
+#if DEVELOPMENT_BOARD == DM_MC02
+#define VOFA_UART UART_7
+#define LOG_UART UART_1
+#elif DEVELOPMENT_BOARD == DJI_C
+#define VOFA_UART
+#define LOG_UART
+#elif DEVELOPMENT_BOARD == DJI_A
+#define VOFA_UART
+#define LOG_UART
+#else
+#error "error"
+#endif
 
 #endif // __APP_CFG_H
