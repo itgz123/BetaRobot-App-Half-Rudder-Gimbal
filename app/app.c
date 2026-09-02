@@ -16,7 +16,7 @@
 #include "app_shoot.h"
 
 /* 日志实例定义 */
-LOG_INSTANCE_DEF(g_app_log); // app 层日志实例
+LOG_INSTANCE_DEF(g_app_log, "app", 0); // app 层日志实例
 
 /* 队列实例定义 */
 QUEUE_INSTANCE_DEF(cmd2shoot_queue, 1, cmd2shoot_data_t);
@@ -43,8 +43,8 @@ QueueHandle_t cmd2sensor_queue_handle = NULL;
 #define SENSOR_STACK_SIZE 1024
 #define SHOOT_STACK_SIZE 1024
 // 任务频率设置
-#define CMD_FREQ_MS 1     // 遥控
-#define GIMBAL_FREQ_MS 1  // 云台
+#define CMD_FREQ_MS 2     // 遥控
+#define GIMBAL_FREQ_MS 2  // 云台
 #define SENSOR_FREQ_MS 1  // 传感器
 #define SHOOT_FREQ_MS 100 // 发射
 /* 任务实例定义 */
@@ -57,15 +57,17 @@ ITCM_RAM static __attribute__((noreturn)) void StartCmdTask(void *argument)
 {
     static uint64_t start;
     static uint64_t dt;
-    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "[freeRTOS] CMD Task Start");
+    TickType_t xLastWakeTime = xTaskGetTickCount();        // 周期锚点(绝对唤醒时刻)
+    const TickType_t xPeriod = pdMS_TO_TICKS(CMD_FREQ_MS); // 任务周期(tick)
+    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "CMD Task Start");
     for (;;)
     {
+        vTaskDelayUntil(&xLastWakeTime, xPeriod); // 固定周期唤醒，避免 vTaskDelay 的周期漂移
         start = DWT_GetTimeUs();
         AppCmdRun();
         dt = DWT_GetTimeUs() - start;
-        if ((dt / 1000) > CMD_FREQ_MS)
-            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "[freeRTOS] CMD Task is being DELAY! dt = %d(ms)", (dt / 1000));
-        vTaskDelay(pdMS_TO_TICKS(CMD_FREQ_MS));
+        if (dt > 1000 * CMD_FREQ_MS)
+            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "CMD Task is being DELAY! dt = %llu(us)", dt);
     }
 }
 
@@ -73,15 +75,17 @@ ITCM_RAM static __attribute__((noreturn)) void StartGimbalTask(void *argument)
 {
     static uint64_t start;
     static uint64_t dt;
-    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "[freeRTOS] GIMBAL Task Start");
+    TickType_t xLastWakeTime = xTaskGetTickCount();           // 周期锚点(绝对唤醒时刻)
+    const TickType_t xPeriod = pdMS_TO_TICKS(GIMBAL_FREQ_MS); // 任务周期(tick)
+    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "GIMBAL Task Start");
     for (;;)
     {
+        vTaskDelayUntil(&xLastWakeTime, xPeriod); // 固定周期唤醒，避免 vTaskDelay 的周期漂移
         start = DWT_GetTimeUs();
         AppGimbalRun();
         dt = DWT_GetTimeUs() - start;
-        if ((dt / 1000) > GIMBAL_FREQ_MS)
-            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "[freeRTOS] GIMBAL Task is being DELAY! dt = %d(ms)", (dt / 1000));
-        vTaskDelay(pdMS_TO_TICKS(GIMBAL_FREQ_MS));
+        if (dt > 1000 * GIMBAL_FREQ_MS)
+            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "GIMBAL Task is being DELAY! dt = %llu(us)", dt);
     }
 }
 
@@ -89,15 +93,17 @@ ITCM_RAM static __attribute__((noreturn)) void StartSensorTask(void *argument)
 {
     static uint64_t start;
     static uint64_t dt;
-    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "[freeRTOS] SENSOR Task Start");
+    TickType_t xLastWakeTime = xTaskGetTickCount();           // 周期锚点(绝对唤醒时刻)
+    const TickType_t xPeriod = pdMS_TO_TICKS(SENSOR_FREQ_MS); // 任务周期(tick)
+    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "SENSOR Task Start");
     for (;;)
     {
+        vTaskDelayUntil(&xLastWakeTime, xPeriod); // 固定周期唤醒，避免 vTaskDelay 的周期漂移
         start = DWT_GetTimeUs();
         AppSensorRun();
         dt = DWT_GetTimeUs() - start;
-        if ((dt / 1000) > SENSOR_FREQ_MS)
-            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "[freeRTOS] SENSOR Task is being DELAY! dt = %d(ms)", (dt / 1000));
-        vTaskDelay(pdMS_TO_TICKS(SENSOR_FREQ_MS));
+        if (dt > 1000 * SENSOR_FREQ_MS)
+            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "SENSOR Task is being DELAY! dt = %llu(us)", dt);
     }
 }
 
@@ -105,15 +111,17 @@ ITCM_RAM static __attribute__((noreturn)) void StartShootTask(void *argument)
 {
     static uint64_t start;
     static uint64_t dt;
-    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "[freeRTOS] SHOOT Task Start");
+    TickType_t xLastWakeTime = xTaskGetTickCount();          // 周期锚点(绝对唤醒时刻)
+    const TickType_t xPeriod = pdMS_TO_TICKS(SHOOT_FREQ_MS); // 任务周期(tick)
+    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "SHOOT Task Start");
     for (;;)
     {
+        vTaskDelayUntil(&xLastWakeTime, xPeriod); // 固定周期唤醒，避免 vTaskDelay 的周期漂移
         start = DWT_GetTimeUs();
         AppShootRun();
         dt = DWT_GetTimeUs() - start;
-        if ((dt / 1000) > SHOOT_FREQ_MS)
-            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "[freeRTOS] SHOOT Task is being DELAY! dt = %d(ms)", (dt / 1000));
-        vTaskDelay(pdMS_TO_TICKS(SHOOT_FREQ_MS));
+        if (dt > 1000 * SHOOT_FREQ_MS)
+            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "SHOOT Task is being DELAY! dt = %llu(us)", dt);
     }
 }
 
@@ -136,7 +144,6 @@ void function_in_main_c(void)
     BSPInit();
     DWT_Init();
     BSPLogInit(); // 初始化日志依赖的 bsp 外设（DWT，幂等）
-    BSPLogInitInstance(&g_app_log, &(LOG_Config_s){.module_name = "app"});
     DaemonInit();
     VofaInit();
     // app
