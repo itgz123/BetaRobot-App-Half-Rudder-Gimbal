@@ -51,13 +51,12 @@ SBUS_INSTANCE_DEF(sbus_inst); // sbus实例
 // 视觉的usb虚拟串口
 static vision_recv_t vision_recv_data = {0};
 static vision_send_t vision_send_data = {0};
-/* 验证：枚举类型须保持协议字节布局（48B/55B） */
-_Static_assert(sizeof(vision_recv_t) == 48, "vision_recv_t size must be 48");
-_Static_assert(sizeof(vision_send_t) == 55, "vision_send_t size must be 55");
 /* 视觉通信对话：MEDIA_USB_SIMPLE 短帧免序号（50B/57B ≤ 64B 单包透传），
  * 收发协议 VISUAL（接收 payload 48B / 发送 payload 55B；media 缓冲自动 = 50/57 对齐原帧长）。
+ * 48/55 为与视觉电脑约定的线长（协议文档值）：结构与约定的一致性由 COMM_DEF
+ * 内部 _Static_assert 编译期校验，不再在此单独断言。
  * 发送由业务层填充 vision_send_t 后 CommSend(&vis_comm, (uint8_t *)&send)。 */
-COMM_DEF(vis_comm, MEDIA_USB_SIMPLE, VISUAL, VISUAL, sizeof(vision_recv_t), sizeof(vision_send_t), UNPACK_IN_ISR);
+COMM_DEF(vis_comm, MEDIA_USB_SIMPLE, VISUAL, VISUAL, vision_recv_t, 48, vision_send_t, 55, UNPACK_IN_ISR);
 
 /*============================================
  *              私有函数
