@@ -12,7 +12,6 @@
 //
 #include "app_cmd.h"
 #include "app_gimbal.h"
-#include "app_sensor.h"
 #include "app_shoot.h"
 
 /* 日志实例定义 */
@@ -23,34 +22,24 @@ QUEUE_INSTANCE_DEF(cmd2shoot_queue, 1, cmd2shoot_data_t);
 QUEUE_INSTANCE_DEF(shoot2cmd_queue, 1, shoot2cmd_data_t);
 QUEUE_INSTANCE_DEF(gimbal2cmd_queue, 1, gimbal2cmd_data_t);
 QUEUE_INSTANCE_DEF(cmd2gimbal_queue, 1, cmd2gimbal_data_t);
-QUEUE_INSTANCE_DEF(sensor2gimbal_queue, 1, sensor2gimbal_data_t);
-QUEUE_INSTANCE_DEF(gimbal2sensor_queue, 1, gimbal2sensor_data_t);
-QUEUE_INSTANCE_DEF(sensor2cmd_queue, 1, sensor2cmd_data_t);
-QUEUE_INSTANCE_DEF(cmd2sensor_queue, 1, cmd2sensor_data_t);
 
 /* 队列句柄（非static，供其他模块通过 extern 访问） */
 QueueHandle_t cmd2shoot_queue_handle = NULL;
 QueueHandle_t shoot2cmd_queue_handle = NULL;
 QueueHandle_t gimbal2cmd_queue_handle = NULL;
 QueueHandle_t cmd2gimbal_queue_handle = NULL;
-QueueHandle_t sensor2gimbal_queue_handle = NULL;
-QueueHandle_t gimbal2sensor_queue_handle = NULL;
-QueueHandle_t sensor2cmd_queue_handle = NULL;
-QueueHandle_t cmd2sensor_queue_handle = NULL;
+
 // 任务STACK大小
 #define CMD_STACK_SIZE 1024
 #define GIMBAL_STACK_SIZE 1024
-#define SENSOR_STACK_SIZE 1024
 #define SHOOT_STACK_SIZE 1024
 // 任务频率设置
 #define CMD_FREQ_MS 2     // 遥控
 #define GIMBAL_FREQ_MS 2  // 云台
-#define SENSOR_FREQ_MS 1  // 传感器
 #define SHOOT_FREQ_MS 100 // 发射
 /* 任务实例定义 */
 TASK_INSTANCE_DEF(cmd_task, CMD_STACK_SIZE);
 TASK_INSTANCE_DEF(gimbal_task, GIMBAL_STACK_SIZE);
-TASK_INSTANCE_DEF(sensor_task, SENSOR_STACK_SIZE);
 TASK_INSTANCE_DEF(shoot_task, SHOOT_STACK_SIZE);
 
 ITCM_RAM static __attribute__((noreturn)) void StartCmdTask(void *argument)
@@ -89,24 +78,6 @@ ITCM_RAM static __attribute__((noreturn)) void StartGimbalTask(void *argument)
     }
 }
 
-ITCM_RAM static __attribute__((noreturn)) void StartSensorTask(void *argument)
-{
-    static uint64_t start;
-    static uint64_t dt;
-    TickType_t xLastWakeTime = xTaskGetTickCount();           // 周期锚点(绝对唤醒时刻)
-    const TickType_t xPeriod = pdMS_TO_TICKS(SENSOR_FREQ_MS); // 任务周期(tick)
-    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "SENSOR Task Start");
-    for (;;)
-    {
-        vTaskDelayUntil(&xLastWakeTime, xPeriod); // 固定周期唤醒，避免 vTaskDelay 的周期漂移
-        start = DWT_GetTimeUs();
-        AppSensorRun();
-        dt = DWT_GetTimeUs() - start;
-        if (dt > 1000 * SENSOR_FREQ_MS)
-            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "SENSOR Task is being DELAY! dt = %llu(us)", dt);
-    }
-}
-
 ITCM_RAM static __attribute__((noreturn)) void StartShootTask(void *argument)
 {
     static uint64_t start;
@@ -131,10 +102,6 @@ static void create_queue(void)
     shoot2cmd_queue_handle = QueueRegister(&shoot2cmd_queue);
     gimbal2cmd_queue_handle = QueueRegister(&gimbal2cmd_queue);
     cmd2gimbal_queue_handle = QueueRegister(&cmd2gimbal_queue);
-    sensor2gimbal_queue_handle = QueueRegister(&sensor2gimbal_queue);
-    gimbal2sensor_queue_handle = QueueRegister(&gimbal2sensor_queue);
-    sensor2cmd_queue_handle = QueueRegister(&sensor2cmd_queue);
-    cmd2sensor_queue_handle = QueueRegister(&cmd2sensor_queue);
 }
 
 void function_in_main_c(void)
@@ -147,7 +114,6 @@ void function_in_main_c(void)
     DaemonInit();
     VofaInit();
     // app
-    AppSensorInit();
     AppGimbalInit();
     AppCmdInit();
     AppShootInit();
@@ -158,7 +124,6 @@ void function_in_main_c(void)
     // 注册任务
     TaskRegister(&cmd_task, &(Task_Init_Config_s){.func = StartCmdTask, .priority = 2});
     TaskRegister(&gimbal_task, &(Task_Init_Config_s){.func = StartGimbalTask, .priority = 2});
-    TaskRegister(&sensor_task, &(Task_Init_Config_s){.func = StartSensorTask, .priority = 3});
     TaskRegister(&shoot_task, &(Task_Init_Config_s){.func = StartShootTask, .priority = 2});
     __enable_irq(); // 开启中断
 }

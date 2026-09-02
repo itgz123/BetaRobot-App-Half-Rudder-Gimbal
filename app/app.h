@@ -15,10 +15,6 @@ extern QueueHandle_t cmd2shoot_queue_handle;
 extern QueueHandle_t shoot2cmd_queue_handle;
 extern QueueHandle_t gimbal2cmd_queue_handle;
 extern QueueHandle_t cmd2gimbal_queue_handle;
-extern QueueHandle_t sensor2gimbal_queue_handle;
-extern QueueHandle_t gimbal2sensor_queue_handle;
-extern QueueHandle_t sensor2cmd_queue_handle;
-extern QueueHandle_t cmd2sensor_queue_handle;
 
 /*============================================
  *              任务间通信
@@ -93,22 +89,6 @@ typedef struct
     float yaw_v;            // yaw轴设定速度
     float yaw_a;            // yaw轴设定加速度
 } cmd2gimbal_data_t;
-typedef struct
-{
-    uint8_t temp_unused;
-} sensor2gimbal_data_t;
-typedef struct
-{
-    uint8_t temp_unused;
-} gimbal2sensor_data_t;
-typedef struct
-{
-    uint8_t temp_unused;
-} sensor2cmd_data_t;
-typedef struct
-{
-    uint8_t temp_unused;
-} cmd2sensor_data_t;
 
 /*============================================
  *            视觉通信协议数据结构
