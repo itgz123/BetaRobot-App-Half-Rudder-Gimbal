@@ -108,8 +108,8 @@ void AppGimbalInit(void)
         .can_e = CAN_1,
         .controller_setting = {
             .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
-            .feedback_direction = MOTOR_DIRECTION_NORMAL,          // 电机方向
-            .motor_direction = MOTOR_DIRECTION_NORMAL,             // 反馈方向
+            .feedback_direction = MOTOR_DIRECTION_REVERSE,         // 反馈方向：镜像后 逆时针→正角度（原编码器逆时针为负）
+            .motor_direction = MOTOR_DIRECTION_REVERSE,            // 输出方向：镜像后 正力矩→逆时针（与反馈同步翻，闭环稳定）
             .position_mode = MOTOR_POSITION_WRAP,                  // 位置模式（yaw无限旋转用环绕）
             .angle_limit_max = M_PI,                               // WRAP: 归一化上限
             .angle_limit_min = -M_PI,                              // WRAP: 归一化下限

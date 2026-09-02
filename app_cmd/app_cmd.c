@@ -5,6 +5,7 @@
 #include "robot_def.h" // gimbal限位/速度/加速度宏
 //
 #include "drv_dbus.h"
+#include "drv_sbus.h"
 #include "drv_planner.h"
 #include "drv_comm.h"
 #include "comm_media_usb_simple.h"
@@ -21,6 +22,7 @@
  *============================================*/
 // 摇杆死区：通道值小于该值视为 0，避免中心抖动引起缓慢漂移
 #define DEADZONE (0.01f)
+#define sbus_half 0.5 // 判断开关通道float等于1或者等于-1
 
 /*============================================
  *              枚举
@@ -28,7 +30,7 @@
 typedef enum
 {
     no_control_e = 0,
-    dbus_e = 1,
+    sbus_e = 1,
     photo_story_e = 2,
     keyboard_mouse_e = 3,
     visual_control_e = 4,
@@ -44,7 +46,7 @@ static PlannerInstance yaw_planner;           // yaw规划器
 
 static cmd_control_type used_remote_control; // 控制类型
 
-DBUS_INSTANCE_DEF(dbus_inst); // dbus实例
+SBUS_INSTANCE_DEF(sbus_inst); // sbus实例
 
 // 视觉的usb虚拟串口
 static vision_recv_t vision_recv_data = {0};
@@ -97,16 +99,13 @@ static void VisionSend(void)
     vision_send_data.aim_color = 0;    // 瞄准敌方颜色（来自裁判系统）
     CommSend(&vis_comm, (uint8_t *)&vision_send_data);
 }
-static void dbus_control(void)
+static void sbus_control(void)
 {
-    if (DBUS_SW_MID == dbus_inst.dbus_data.s1)
-    {
-        cmd_cmd2gimbal_data.state = enable;
-    }
+    cmd_cmd2gimbal_data.state = enable;
     PlannerInput_s in;
     PlannerOutput_s out;
 
-    float pitch_ch = dbus_inst.dbus_data.ch[3];
+    float pitch_ch = sbus_inst.sbus_data.ch[2];
     pitch_ch = (BSP_Math_Fabs(pitch_ch) < DEADZONE) ? 0.0f : pitch_ch;
     in.current_position = cmd_gimbal2cmd_data.pitch_position;
     in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
@@ -117,8 +116,9 @@ static void dbus_control(void)
     cmd_cmd2gimbal_data.pitch_v = out.speed;
     cmd_cmd2gimbal_data.pitch_a = out.acceleration;
 
-    float yaw_ch = dbus_inst.dbus_data.ch[2];
+    float yaw_ch = sbus_inst.sbus_data.ch[3];
     yaw_ch = (BSP_Math_Fabs(yaw_ch) < DEADZONE) ? 0.0f : yaw_ch;
+    yaw_ch = -yaw_ch; // yaw 已约定逆时针为正（gimbal 端电机方向镜像），此处取反补偿，保持摇杆物理转向不变
     in.current_position = cmd_gimbal2cmd_data.yaw_position;
     in.current_speed = cmd_gimbal2cmd_data.yaw_vel;
     in.current_acceleration = 0.0f;
@@ -152,17 +152,17 @@ static void visual_control(void)
  *============================================*/
 void AppCmdInit(void)
 {
-    // 注册 DBUS（仅硬件绑定）
-    BSP_ASSERT_APP_CALL(DBUSRegister(&dbus_inst));
+    // 注册 SBUS（仅硬件绑定）
+    BSP_ASSERT_APP_CALL(SBUSRegister(&sbus_inst));
 
-    // 配置 DBUS（硬件映射 + 运行参数）
-    DBUS_Config_s dbus_cfg = {
+    // 配置 SBUS（硬件映射 + 运行参数）
+    SBUS_Config_s sbus_cfg = {
         .uart_e = UART_SBUS,
         .daemon_reload = 100,
         .daemon_fault = DAEMON_FAULT_NONE,
         .lost_timeout_ms = 1000,
     };
-    BSP_ASSERT_APP_CALL(DBUSConfig(&dbus_inst, &dbus_cfg));
+    BSP_ASSERT_APP_CALL(SBUSConfig(&sbus_inst, &sbus_cfg));
 
     // 初始化规划器（位置限幅/位置模式/最大速度/最大加速度）
     Planner_Init_Config_s pitch_cfg = {
@@ -200,25 +200,20 @@ ITCM_RAM void AppCmdRun(void)
     xQueueReceive(gimbal2cmd_queue_handle, &cmd_gimbal2cmd_data, 0);
 
     // 1. 控制源选择：
-    //    dbus 在线（未丢帧/失控）时：S1 上=dbus手动，S1 中=视觉，S1 下=失能
     used_remote_control = no_control_e;
-    // 选择建立在dbus遥控在线的基础上
-    if ((dbus_inst.daemon->is_online == 1) && (dbus_inst.dbus_data.failsafe == 0))
+    // 选择建立在sbus遥控在线的基础上
+    if (sbus_inst.daemon->is_online == 1)
     {
         // 这里的选择路径比较复杂
-        if (DBUS_SW_MID == dbus_inst.dbus_data.s1)
+        if (sbus_inst.sbus_data.ch[4] > sbus_half)
         {
-            used_remote_control = dbus_e;
-        }
-        else if (DBUS_SW_DOWN == dbus_inst.dbus_data.s1)
-        {
-            if (vision_appear_e == vision_recv_data.appear)
+            if ((sbus_inst.sbus_data.ch[5] > sbus_half) && (vision_appear_e == vision_recv_data.appear))
             {
                 used_remote_control = visual_control_e;
             }
             else
             {
-                used_remote_control = dbus_e;
+                used_remote_control = sbus_e;
             }
         }
     }
@@ -232,9 +227,9 @@ ITCM_RAM void AppCmdRun(void)
     cmd_cmd2gimbal_data.yaw_v = 0.0f;
     cmd_cmd2gimbal_data.yaw_a = 0.0f;
 
-    if (dbus_e == used_remote_control) // 使用dbus遥控：摇杆 -1~1 → 目标速度 → 规划器
+    if (sbus_e == used_remote_control) // 使用sbus遥控：摇杆 -1~1 → 目标速度 → 规划器
     {
-        dbus_control();
+        sbus_control();
     }
     else if (photo_story_e == used_remote_control) // 使用图传遥控
     {
