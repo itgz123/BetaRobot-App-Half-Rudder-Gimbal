@@ -43,6 +43,8 @@ static float pitch_ch, yaw_ch; // sbus，图传，键鼠都是给2个通道的
 
 static cmd2gimbal_data_t cmd_cmd2gimbal_data; // cmd-gimbal
 static gimbal2cmd_data_t cmd_gimbal2cmd_data; // gimbal-cmd
+static cmd2shoot_data_t cmd_cmd2shoot_data;   // cmd-shoot
+static shoot2cmd_data_t cmd_shoot2cmd_data;   // shoot-cmd
 static PlannerInstance pitch_planner;         // pitch规划器
 static PlannerInstance yaw_planner;           // yaw规划器
 
@@ -202,6 +204,7 @@ ITCM_RAM void AppCmdRun(void)
 {
     // 0. 读取云台反馈（规划器需要当前位置/速度）
     xQueueReceive(gimbal2cmd_queue_handle, &cmd_gimbal2cmd_data, 0);
+    xQueueReceive(shoot2cmd_queue_handle, &cmd_shoot2cmd_data, 0);
 
     // 1. 控制源选择：
     used_remote_control = no_control_e;
@@ -223,6 +226,7 @@ ITCM_RAM void AppCmdRun(void)
     }
 
     // 2. 设置要发送的数据（默认失能 + 设定值清零）
+    // .1. pitch和yaw
     cmd_cmd2gimbal_data.state = disable;
     cmd_cmd2gimbal_data.pitch_x = 0.0f;
     cmd_cmd2gimbal_data.pitch_v = 0.0f;
@@ -250,8 +254,18 @@ ITCM_RAM void AppCmdRun(void)
         }
         planer_control(); // 规划期控制：sbus，图传，键鼠都是给2个通道的float
     }
+    // .2. 发射
+    if ((sbus_inst.sbus_data.ch[7] > sbus_half) && (cmd_cmd2gimbal_data.state == enable))
+    {
+        cmd_cmd2shoot_data.fire_or_not = 1;
+    }
+    else
+    {
+        cmd_cmd2shoot_data.fire_or_not = 0;
+    }
 
     // 3. 发送出去
     xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data); // 通过队列
+    xQueueOverwrite(cmd2shoot_queue_handle, &cmd_cmd2shoot_data);   // 通过队列
     VisionSend();                                                   // 板→视觉 状态回传（USB 虚拟串口）
 }

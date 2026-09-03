@@ -65,7 +65,7 @@ typedef enum : uint8_t
  *============================================*/
 typedef struct
 {
-    uint8_t temp_unused;
+    uint8_t fire_or_not; // 临时开火标志
 } cmd2shoot_data_t;
 typedef struct
 {

@@ -51,8 +51,8 @@
 #define VOFA_UART UART_1
 #define LOG_UART UART_7
 #elif DEVELOPMENT_BOARD == DJI_C // UART_1:4pin,UART_6:3pin
-// #define VOFA_UART
-#define LOG_UART UART_6
+#define VOFA_UART UART_6
+// #define LOG_UART UART_6
 #elif DEVELOPMENT_BOARD == DJI_A
 // #define VOFA_UART
 // #define LOG_UART
