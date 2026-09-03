@@ -34,9 +34,9 @@ QueueHandle_t cmd2gimbal_queue_handle = NULL;
 #define GIMBAL_STACK_SIZE 1024
 #define SHOOT_STACK_SIZE 1024
 // 任务频率设置
-#define CMD_FREQ_MS 2     // 遥控
-#define GIMBAL_FREQ_MS 2  // 云台
-#define SHOOT_FREQ_MS 100 // 发射
+#define CMD_FREQ_MS 2    // 遥控，视觉，底盘-云台
+#define GIMBAL_FREQ_MS 2 // 云台
+#define SHOOT_FREQ_MS 2  // 发射
 /* 任务实例定义 */
 TASK_INSTANCE_DEF(cmd_task, CMD_STACK_SIZE);
 TASK_INSTANCE_DEF(gimbal_task, GIMBAL_STACK_SIZE);

@@ -8,6 +8,8 @@
 #include "drv_rsmotor.h"
 #include "drv_vofa.h"
 #include "drv_axis_mit_lite.h"
+// #include "drv_bmi088.h"
+// #include "drv_mahony.h"
 //
 #include "bsp_assert.h"
 
@@ -17,6 +19,16 @@ DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
 RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
 static AxisMitLiteInstance pitchup_axis;
 static AxisMitLiteInstance yaw_axis;
+
+// // 姿态传感器相关变量
+// static BMI088_Data_t imu = {0};
+// static euler_t euler = {0};
+// static uint64_t last_imu_ts = 0; /* 上帧 IMU 时间戳 (us)，用于计算 dt */
+// static float dt;
+// static vector3_t gyro;
+// static vector3_t acc;
+// BMI088_INSTANCE_DEF(bmi088);
+// MAHONY_INSTANCE_DEF(mahony);
 
 static cmd2gimbal_data_t gimbal_cmd2gimbal_data; // cmd2gimbal
 
@@ -212,6 +224,36 @@ void AppGimbalInit(void)
         // TUNE 正弦参考默认以延时结束时的当前位置为中心（drv 层内置），避免起始误差过大
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&yaw_axis, &yaw_axis_cfg));
+
+    // // 注册 BMI088（只注册子模块，Config 时配置硬件）
+    // BSP_ASSERT_APP_CALL(BMI088Register(&bmi088));
+
+    // // 配置 BMI088（硬件枚举 + 传感器参数 + daemon）
+    // BMI088_Config_s bmi088_cfg = {
+    //     .spi_e = SPI_BMI088,
+    //     .cs_acc_e = GPIO_BMI088_CS_ACCEL,
+    //     .cs_gyro_e = GPIO_BMI088_CS_GYRO,
+    //     .int_acc_e = GPIO_BMI088_INT_ACCEL,
+    //     .int_gyro_e = GPIO_BMI088_INT_GYRO,
+    //     .heater_e = TIM_HEATER,
+    //     .daemon_reload = 20,
+    //     .daemon_fault = DAEMON_FAULT_NONE,
+    //     .acc_range = BMI088_ACC_RANGE_3G,
+    //     .acc_bwp = BMI088_ACC_BWP_NORMAL,
+    //     .acc_odr = BMI088_ACC_ODR_400,
+    //     .gyro_range = BMI088_GYRO_RANGE_2000,
+    //     .gyro_conf = BMI088_GYRO_CONF_2000_230,
+    //     .work_mode = BMI088_MODE_INT,
+    //     .spi_timeout_ms = 10, // SPI IT/DMA 传输超时(ms)
+    // };
+    // BSP_ASSERT_APP_CALL(BMI088Config(&bmi088, &bmi088_cfg));
+
+    // // 初始化 Mahony 滤波器
+    // Mahony_Init_Config_s mahony_cfg = {
+    //     .kp = 0.5f,
+    //     .ki = 0.0f,
+    // };
+    // MahonyInit(&mahony, &mahony_cfg);
 }
 
 ITCM_RAM void AppGimbalRun(void)
@@ -224,6 +266,29 @@ ITCM_RAM void AppGimbalRun(void)
     MotorData_s pitchup_mdata = MotorGetData(&(pitchup_motor.base));
     pitchup_mdata.position = (pitchup_motor.base.data_all.data.position - pitchup_position_0) - (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
     MotorData_s yaw_mdata = MotorGetData(&(yaw_motor.base));
+
+    // // 读取 BMI088 原始数据
+    // imu = BMI088ReadInt(&bmi088);
+
+    // // 计算 dt：用 BMI088 插值时间戳之差 (us → s)
+    // dt = 0.0f;
+    // if (imu.time_stamp > 0 && last_imu_ts > 0)
+    // {
+    //     dt = (float)(imu.time_stamp - last_imu_ts) * 1e-6f;
+    // }
+    // last_imu_ts = imu.time_stamp;
+
+    // // Mahony 姿态解算（dt 由 APP 层根据 BMI088 插值时间戳传入）
+    // gyro.x = imu.gyro[0];
+    // gyro.y = imu.gyro[1];
+    // gyro.z = imu.gyro[2];
+    // acc.x = imu.acc[0];
+    // acc.y = imu.acc[1];
+    // acc.z = imu.acc[2];
+    // MahonyUpdate(&mahony, gyro, acc, dt);
+
+    // // 从 Mahony 四元数解算 yaw 角
+    // euler = BSP_Math_QuatToEuler(mahony.quat);
 
     // setref
     // 清零
