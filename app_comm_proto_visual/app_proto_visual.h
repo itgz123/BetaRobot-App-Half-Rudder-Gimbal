@@ -9,8 +9,8 @@
  *       * 接收 payload = 48B（原 50B 帧：cmd_ID + 数据 + CRC16）
  *       * 发送 payload = 55B（原 57B 帧）
  *   - CRC16 = 裁判系统官方算法（实际为 CRC-16/MCRF4XX）：poly 0x1021、LSB-first
- *     反射（refin/refout=1）、init 0xFFFF、xor_out 0、附加低字节在前。与 bsp_crc
- *     现有表（CCITT-FALSE/KERMIT/MODBUS）均不匹配，实现用 BSP_CRC_Direct 逐位计算
+ *     反射（refin/refout=1）、init 0xFFFF、xor_out 0、附加低字节在前。与 lib_crc
+ *     现有表（CCITT-FALSE/KERMIT/MODBUS）均不匹配，实现用 LIB_CRC_Direct 逐位计算
  *     （零 RAM 表，1kHz 57B 帧开销可忽略）。
  * 数据字段结构体不内嵌：payload 即帧体完整字节，业务层按帧偏移自行解析
  * （接收 data[0]==VISUAL_CMD_RX，时间戳/各 float 偏移见需求文档）。

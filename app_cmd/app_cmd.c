@@ -12,7 +12,7 @@
 //
 #include "bsp_freertos.h"
 #include "bsp_assert.h"
-#include "bsp_math.h"
+#include "lib_math.h"
 #include "bsp_dwt.h"
 //
 #include <string.h>
@@ -105,7 +105,7 @@ static void sbus_control(void)
     PlannerOutput_s out;
 
     float pitch_ch = sbus_inst.sbus_data.ch[2];
-    pitch_ch = (BSP_Math_Fabs(pitch_ch) < DEADZONE) ? 0.0f : pitch_ch;
+    pitch_ch = (Lib_Math_Fabs(pitch_ch) < DEADZONE) ? 0.0f : pitch_ch;
     in.current_position = cmd_gimbal2cmd_data.pitch_position;
     in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
     in.current_acceleration = 0.0f; // 电机无加速度反馈
@@ -116,7 +116,7 @@ static void sbus_control(void)
     cmd_cmd2gimbal_data.pitch_a = out.acceleration;
 
     float yaw_ch = sbus_inst.sbus_data.ch[3];
-    yaw_ch = (BSP_Math_Fabs(yaw_ch) < DEADZONE) ? 0.0f : yaw_ch;
+    yaw_ch = (Lib_Math_Fabs(yaw_ch) < DEADZONE) ? 0.0f : yaw_ch;
     yaw_ch = -yaw_ch; // yaw 已约定逆时针为正（gimbal 端电机方向镜像），此处取反补偿，保持摇杆物理转向不变
     in.current_position = cmd_gimbal2cmd_data.yaw_position;
     in.current_speed = cmd_gimbal2cmd_data.yaw_vel;

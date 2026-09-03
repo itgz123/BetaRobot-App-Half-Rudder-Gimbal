@@ -13,22 +13,22 @@
  *
  * CRC16 = 裁判系统官方算法（crc_ref.c，实际为 CRC-16/MCRF4XX）：poly 0x1021、
  * LSB-first 反射（refin/refout=1）、init 0xFFFF、xor_out 0、低字节在前附加。
- * 与 bsp_crc 内置表（CCITT-FALSE/KERMIT/MODBUS 等）均不匹配，用 BSP_CRC_Direct
+ * 与 lib_crc 内置表（CCITT-FALSE/KERMIT/MODBUS 等）均不匹配，用 LIB_CRC_Direct
  * 以算法参数逐位计算，无需建表（零 RAM；1kHz 57B 帧开销可忽略）。
  * @note crc_ref 的 wCRC_Table 经 Python 逐项验证 = poly 0x1021 反射表（256/256 匹配），
  *       非资料中常误写的 poly 0x8005 MSB-first；算法参数据此确定。
  */
 
 #include "app_proto_visual.h"
-#include "bsp_crc.h"
+#include "lib_crc.h"
 #include <string.h>
 
 #ifdef DRV_COMM_USED
 
 /* 裁判系统 CRC16 算法参数 = CRC-16/MCRF4XX：{init 0xFFFF, 16, poly 0x1021, xor_out 0,
- * refin 1, refout 1}。BSP_CRC_Direct 反射分支（LSB-first，内部取 poly 反射 0x8408）
+ * refin 1, refout 1}。LIB_CRC_Direct 反射分支（LSB-first，内部取 poly 反射 0x8408）
  * + refin==refout 不反转结果，与 crc_ref 查表算法一致（Python 逐项验证）。 */
-static const BSP_CRC_Algo_t s_visual_crc_algo = {
+static const LIB_CRC_Algo_t s_visual_crc_algo = {
     .init_value = 0xFFFF,
     .poly_size = 16,
     .poly = 0x1021,
@@ -60,7 +60,7 @@ static int8_t VisualPack(CommProto *self, const uint8_t *payload, uint8_t *out_b
     (void)p;
 
     memcpy(out_buff, payload, self->payload_size); /* 帧体 = payload（含 cmd_ID） */
-    crc = BSP_CRC_Direct(&s_visual_crc_algo, out_buff, self->payload_size);
+    crc = LIB_CRC_Direct(&s_visual_crc_algo, out_buff, self->payload_size);
     out_buff[self->payload_size] = (uint8_t)(crc & 0xFF); /* CRC16 低字节在前 */
     out_buff[self->payload_size + 1] = (uint8_t)((crc >> 8) & 0xFF);
     return 0;
@@ -76,7 +76,7 @@ static const uint8_t *VisualUnpack(CommProto *self, const uint8_t *data)
     if (self == NULL || data == NULL)
         return NULL;
 
-    crc_calc = BSP_CRC_Direct(&s_visual_crc_algo, data, self->payload_size);
+    crc_calc = LIB_CRC_Direct(&s_visual_crc_algo, data, self->payload_size);
     crc_recv = (uint32_t)data[self->payload_size] |
                ((uint32_t)data[self->payload_size + 1] << 8);
     if (crc_calc != crc_recv)

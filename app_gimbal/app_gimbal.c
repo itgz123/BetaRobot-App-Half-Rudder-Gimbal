@@ -9,7 +9,7 @@
 #include "drv_vofa.h"
 #include "drv_axis_mit_lite.h"
 // #include "drv_bmi088.h"
-// #include "drv_mahony.h"
+// #include "lib_mahony.h"
 //
 #include "bsp_assert.h"
 
@@ -288,7 +288,7 @@ ITCM_RAM void AppGimbalRun(void)
     // MahonyUpdate(&mahony, gyro, acc, dt);
 
     // // 从 Mahony 四元数解算 yaw 角
-    // euler = BSP_Math_QuatToEuler(mahony.quat);
+    // euler = Lib_Math_QuatToEuler(mahony.quat);
 
     // setref
     // 清零
