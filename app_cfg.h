@@ -29,6 +29,7 @@
 #define DRV_DBUS_USED             // DBUS 遥控器驱动
 #define DRV_SBUS_USED             // SBUS 遥控器驱动
 #define LIB_MAHONY_USED           // Mahony 姿态解算
+#define LIB_KF_USED               // 通用卡尔曼滤波 (lib_kf)
 #define DRV_DJIMOTOR_USED         // DJI 电机驱动
 #define DRV_DMMOTOR_USED          // DM 电机驱动
 #define DRV_RSMOTOR_USED          // RS05 电机驱动（灵足时代，MIT 协议）

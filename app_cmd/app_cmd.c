@@ -22,7 +22,7 @@
  *============================================*/
 // 摇杆死区：通道值小于该值视为 0，避免中心抖动引起缓慢漂移
 #define DEADZONE (0.01f)
-#define sbus_half 0.5 // 判断开关通道float等于1或者等于-1
+#define sbus_half 0.5 // 判断开关通道float等于1/-1/0
 
 /*============================================
  *              枚举
@@ -39,6 +39,8 @@ typedef enum
 /*============================================
  *              变量
  *============================================*/
+static float pitch_ch, yaw_ch; // sbus，图传，键鼠都是给2个通道的
+
 static cmd2gimbal_data_t cmd_cmd2gimbal_data; // cmd-gimbal
 static gimbal2cmd_data_t cmd_gimbal2cmd_data; // gimbal-cmd
 static PlannerInstance pitch_planner;         // pitch规划器
@@ -101,31 +103,8 @@ static void VisionSend(void)
 static void sbus_control(void)
 {
     cmd_cmd2gimbal_data.state = enable;
-    PlannerInput_s in;
-    PlannerOutput_s out;
-
-    float pitch_ch = sbus_inst.sbus_data.ch[2];
-    pitch_ch = (Lib_Math_Fabs(pitch_ch) < DEADZONE) ? 0.0f : pitch_ch;
-    in.current_position = cmd_gimbal2cmd_data.pitch_position;
-    in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
-    in.current_acceleration = 0.0f; // 电机无加速度反馈
-    in.target_cmd = pitch_ch;
-    PlannerCalculate(&pitch_planner, &in, &out);
-    cmd_cmd2gimbal_data.pitch_x = out.position;
-    cmd_cmd2gimbal_data.pitch_v = out.speed;
-    cmd_cmd2gimbal_data.pitch_a = out.acceleration;
-
-    float yaw_ch = sbus_inst.sbus_data.ch[3];
-    yaw_ch = (Lib_Math_Fabs(yaw_ch) < DEADZONE) ? 0.0f : yaw_ch;
-    yaw_ch = -yaw_ch; // yaw 已约定逆时针为正（gimbal 端电机方向镜像），此处取反补偿，保持摇杆物理转向不变
-    in.current_position = cmd_gimbal2cmd_data.yaw_position;
-    in.current_speed = cmd_gimbal2cmd_data.yaw_vel;
-    in.current_acceleration = 0.0f;
-    in.target_cmd = yaw_ch;
-    PlannerCalculate(&yaw_planner, &in, &out);
-    cmd_cmd2gimbal_data.yaw_x = out.position;
-    cmd_cmd2gimbal_data.yaw_v = out.speed;
-    cmd_cmd2gimbal_data.yaw_a = out.acceleration;
+    pitch_ch = sbus_inst.sbus_data.ch[2];
+    yaw_ch = sbus_inst.sbus_data.ch[3];
 }
 static void photo_story_control(void)
 {
@@ -144,6 +123,32 @@ static void visual_control(void)
     cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
     cmd_cmd2gimbal_data.yaw_v = vision_recv_data.v_yaw;
     cmd_cmd2gimbal_data.yaw_a = vision_recv_data.a_yaw;
+}
+static void planer_control(void)
+{
+    PlannerInput_s in;
+    PlannerOutput_s out;
+
+    pitch_ch = (Lib_Math_Fabs(pitch_ch) < DEADZONE) ? 0.0f : pitch_ch;
+    in.current_position = cmd_gimbal2cmd_data.pitch_position;
+    in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
+    in.current_acceleration = 0.0f; // 电机无加速度反馈
+    in.target_cmd = pitch_ch;
+    PlannerCalculate(&pitch_planner, &in, &out);
+    cmd_cmd2gimbal_data.pitch_x = out.position;
+    cmd_cmd2gimbal_data.pitch_v = out.speed;
+    cmd_cmd2gimbal_data.pitch_a = out.acceleration;
+
+    yaw_ch = (Lib_Math_Fabs(yaw_ch) < DEADZONE) ? 0.0f : yaw_ch;
+    yaw_ch = -yaw_ch; // yaw 已约定逆时针为正（gimbal 端电机方向镜像），此处取反补偿，保持摇杆物理转向不变
+    in.current_position = cmd_gimbal2cmd_data.yaw_position;
+    in.current_speed = cmd_gimbal2cmd_data.yaw_vel;
+    in.current_acceleration = 0.0f;
+    in.target_cmd = yaw_ch;
+    PlannerCalculate(&yaw_planner, &in, &out);
+    cmd_cmd2gimbal_data.yaw_x = out.position;
+    cmd_cmd2gimbal_data.yaw_v = out.speed;
+    cmd_cmd2gimbal_data.yaw_a = out.acceleration;
 }
 
 /*============================================
@@ -225,31 +230,28 @@ ITCM_RAM void AppCmdRun(void)
     cmd_cmd2gimbal_data.yaw_x = 0.0f;
     cmd_cmd2gimbal_data.yaw_v = 0.0f;
     cmd_cmd2gimbal_data.yaw_a = 0.0f;
-
-    if (sbus_e == used_remote_control) // 使用sbus遥控：摇杆 -1~1 → 目标速度 → 规划器
-    {
-        sbus_control();
-    }
-    else if (photo_story_e == used_remote_control) // 使用图传遥控
-    {
-        photo_story_control();
-    }
-    else if (keyboard_mouse_e == used_remote_control) // 使用图传键鼠
-    {
-        keyboard_mouse_control();
-    }
-    else if (visual_control_e == used_remote_control) // 使用视觉：直接给位置/速度/加速度
+    if (visual_control_e == used_remote_control) // 使用视觉：直接给位置/速度/加速度
     {
         visual_control();
     }
-    else // 全部失效
+    else
     {
-        cmd_cmd2gimbal_data.state = disable;
+        if (sbus_e == used_remote_control) // 使用sbus遥控：摇杆 -1~1 → 目标速度 → 规划器
+        {
+            sbus_control();
+        }
+        else if (photo_story_e == used_remote_control) // 使用图传遥控
+        {
+            photo_story_control();
+        }
+        else if (keyboard_mouse_e == used_remote_control) // 使用图传键鼠
+        {
+            keyboard_mouse_control();
+        }
+        planer_control(); // 规划期控制：sbus，图传，键鼠都是给2个通道的float
     }
 
-    // 3. 通过队列发送出去
-    xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data);
-
-    // 4. 板→视觉 状态回传（USB 虚拟串口）
-    VisionSend();
+    // 3. 发送出去
+    xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data); // 通过队列
+    VisionSend();                                                   // 板→视觉 状态回传（USB 虚拟串口）
 }
