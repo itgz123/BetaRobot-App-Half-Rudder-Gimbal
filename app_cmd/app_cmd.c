@@ -195,6 +195,8 @@ void AppCmdInit(void)
     CommConfig_s vis_cfg = {
         .media_cfg = &(USB_Config_s){0}, /* USB 无运行期参数（接收钩子由 media 层强制接管） */
         .on_frame = VisionRecvOnFrame,
+        .daemon_fault = DAEMON_FAULT_NONE,
+        .daemon_reload = 10,
     };
     CommRegister(&vis_comm);
     CommConfig(&vis_comm, &vis_cfg);
