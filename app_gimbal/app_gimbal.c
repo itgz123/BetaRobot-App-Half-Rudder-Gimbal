@@ -8,6 +8,7 @@
 #include "drv_rsmotor.h"
 #include "drv_vofa.h"
 #include "drv_axis_mit_lite.h"
+#include "drv_terminal_lite.h"
 // #include "drv_bmi088.h"
 // #include "lib_mahony.h"
 //
@@ -36,6 +37,41 @@ static cmd2gimbal_data_t gimbal_cmd2gimbal_data; // cmd2gimbal
 static float pitchdown_motor_setref = 0;
 static float pitchup_motor_setref = 0;
 static float yaw_motor_setref = 0;
+
+/* 串口调参（terminal_lite）：type=本次操作 CMD_GET/CMD_SET（单一操作，非掩码 3）；
+ * set 值已由模块按命令表 min/max 校验过，exec 只做读写 */
+static int8_t GimbalParamExec(CmdType_e type, float value, float *pval, float *var)
+{
+    if (type == CMD_SET)
+        *var = value;
+    *pval = *var; // 读=当前值；写=写入后的值（供默认回显）
+    return 0;
+}
+
+static int8_t ExecPupKp(CmdType_e type, float v, float *p) { return GimbalParamExec(type, v, p, &pitchup_axis.mit.kp); }
+static int8_t ExecPupKd(CmdType_e type, float v, float *p) { return GimbalParamExec(type, v, p, &pitchup_axis.mit.kd); }
+static int8_t ExecYawKp(CmdType_e type, float v, float *p) { return GimbalParamExec(type, v, p, &yaw_axis.mit.kp); }
+static int8_t ExecGrav(CmdType_e type, float v, float *p) { return GimbalParamExec(type, v, p, &pitchup_axis.params.gravity); }
+static int8_t ExecStage(CmdType_e type, float value, float *pval)
+{
+    (void)value;
+    if (type == CMD_SET)
+        return -1; // 只读
+    *pval = (float)pitchup_axis.stage;
+    return 0;
+}
+
+/* 命令表：结构 {token, type, scale, min, max, exec}。
+ * scale 默认回显定点化倍率（无 %f，val*scale 转 int32 后 %d 回显，如千分位=1000 → 4.5 回 "4500"）；
+ * min/max 为 tlset 写入上下限（含），越限回 err；无限制用 TERMINAL_LITE_NO_BOUND。 */
+static TerminalLiteCmd_s s_gimbal_tl_cmds[] = {
+    {"pup_kp", CMD_GET_SET, 1000, 0.0f, 100.0f, ExecPupKp}, // 例：读/写 pitchup 轴 kp
+    {"pup_kd", CMD_GET_SET, 1000, 0.0f, 100.0f, ExecPupKd},
+    {"yaw_kp", CMD_GET_SET, 1000, 0.0f, 100.0f, ExecYawKp},
+    {"grav", CMD_GET_SET, 1000, -10.0f, 10.0f, ExecGrav},
+    {"stage", CMD_GET, 1, TERMINAL_LITE_NO_BOUND, ExecStage}, // 只读示例（整数）
+};
+#define GIMBAL_TL_CMD_NUM (sizeof(s_gimbal_tl_cmds) / sizeof(s_gimbal_tl_cmds[0]))
 
 /* 外部函数 */
 void AppGimbalInit(void)
@@ -182,15 +218,15 @@ void AppGimbalInit(void)
             .duration = 1,
             .num_freqs = 10,
         },         // 多正弦叠加参数
-        .kp = 6,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
-        .kd = 0.6, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+        .kp = 4,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
+        .kd = 0.4, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 
     AxisMitLite_Init_Config_s yaw_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        .vofa_enable = 1,                // 该轴写 VOFA 12 通道调试（多轴实例仅一个置 1）
+        // .vofa_enable = 1,                // 该轴写 VOFA 12 通道调试（多轴实例仅一个置 1）
         .params = {
             .gravity = 0.0f,
             .gear_ratio = 1,
@@ -216,8 +252,8 @@ void AppGimbalInit(void)
             .duration = 1,
             .num_freqs = 10,
         },         // 多正弦叠加参数
-        .kp = 48,  // 位置增益
-        .kd = 0.8, // 速度增益
+        .kp = 1,   // 位置增益
+        .kd = 0.1, // 速度增益
         // yaw 是 WRAP 环绕轴（±π 归一化）：误差需取最短路径，否则边界处跳变
         .error_normalize_range = 2.0f * M_PI, // 误差 wrap 到 [-π, π)
         .error_normalize_enable = 1,          // 启用环绕误差归一化
@@ -254,6 +290,9 @@ void AppGimbalInit(void)
     //     .ki = 0.0f,
     // };
     // MahonyInit(&mahony, &mahony_cfg);
+
+    // 串口调参终端（轴实例就绪后注册命令表）
+    TerminalLiteInit(s_gimbal_tl_cmds, (uint8_t)GIMBAL_TL_CMD_NUM);
 }
 
 ITCM_RAM void AppGimbalRun(void)
@@ -344,6 +383,9 @@ ITCM_RAM void AppGimbalRun(void)
     MotorSend(&(pitchdown_motor.base));
     MotorSend(&(pitchup_motor.base));
     MotorSend(&(yaw_motor.base));
+
+    // 串口调参：处理收到的命令（每帧最多 8 条，空队列时几乎零开销）
+    TerminalLiteExecute(1);
 
     // 其他
     // vofa发送
