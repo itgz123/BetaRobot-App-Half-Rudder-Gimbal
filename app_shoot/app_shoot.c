@@ -4,7 +4,7 @@
 #include "robot_def.h" // gimbal限位/速度/加速度宏
 //
 #include "drv_motor_base.h"
-#include "drv_djimotor.h"
+#include "drv_djimotor_broadcast.h"
 #include "drv_vofa.h"
 //
 #include "bsp_assert.h"
@@ -12,7 +12,7 @@
 
 // 变量
 // 实例
-DJIMOTOR_INSTANCE_DEF(friction_motor); // 摩擦轮 M3508 (C620)
+DJIMOTOR_BROADCAST_INSTANCE_DEF(friction_motor); // 摩擦轮 M3508 (C620)
 // 通信
 static cmd2shoot_data_t shoot_cmd2shoot_data; // cmd-shoot
 static shoot2cmd_data_t shoot_shoot2cmd_data; // shoot-cmd
@@ -22,8 +22,8 @@ static float friction_motor_setref = 0;
 void AppShootInit(void)
 {
     // 注册 CAN 实例
-    BSP_ASSERT_APP_CALL(DJIMotorRegister(&friction_motor));
-    DJIMotor_Config_s friction_motor_cfg = {
+    BSP_ASSERT_APP_CALL(DJIMotorBroadcastRegister(&friction_motor));
+    DJIMotorBroadcast_Config_s friction_motor_cfg = {
         .can_e = CAN_2,
         .model = DJI_MODEL_M3508,
         .motor_id = 7,
@@ -77,7 +77,7 @@ void AppShootInit(void)
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
     };
-    BSP_ASSERT_APP_CALL(DJIMotorConfig(&friction_motor, &friction_motor_cfg));
+    BSP_ASSERT_APP_CALL(DJIMotorBroadcastConfig(&friction_motor, &friction_motor_cfg));
 
     MotorEnable(&(friction_motor.base));
 }
