@@ -8,8 +8,8 @@
  *
  * 编解码：
  *   - VisualPack：帧体 = payload（含 cmd_ID）原样拷贝 → 尾部追加 CRC16（低字节在前）
- *   - VisualUnpack：CRC16 校验；通过返回 data（payload 含 cmd_ID，业务层按偏移解析），失败返回 NULL
- *   - VisualReset：无内部状态（固定长度 + 每帧独立校验），空操作
+ *   - VisualUnpack：CRC16 校验；通过返回 data（payload 含 cmd_ID，业务层按偏移解析），失败返回 NULL 并累加 rx_err
+ *   - VisualReset：无内部状态需复位（固定长度 + 每帧独立校验），仅清错误计数
  *
  * CRC16 = 裁判系统官方算法（crc_ref.c，实际为 CRC-16/MCRF4XX）：poly 0x1021、
  * LSB-first 反射（refin/refout=1）、init 0xFFFF、xor_out 0、低字节在前附加。
@@ -80,15 +80,19 @@ static const uint8_t *VisualUnpack(CommProto *self, const uint8_t *data)
     crc_recv = (uint32_t)data[self->payload_size] |
                ((uint32_t)data[self->payload_size + 1] << 8);
     if (crc_calc != crc_recv)
-        return NULL; /* CRC 不符：丢弃 */
+    {
+        ((CommProtoVisual *)self)->rx_err++; /* 坏帧计数（CRC 不符，丢弃；下一帧独立校验自动恢复） */
+        return NULL;
+    }
 
     return data; /* payload = data（含 cmd_ID），长度 = payload_size（media 层已校验帧长） */
 }
 
-/* 重置解包状态：固定长度 + 每帧独立校验，无内部状态 */
+/* 重置解包状态：固定长度 + 每帧独立校验，无需复位内部状态；清错误计数 */
 static void VisualReset(CommProto *self)
 {
-    (void)self;
+    if (self != NULL)
+        ((CommProtoVisual *)self)->rx_err = 0;
 }
 
 int8_t CommProtoVisualInit(CommProtoVisual *proto)
@@ -97,6 +101,7 @@ int8_t CommProtoVisualInit(CommProtoVisual *proto)
         return -1;
     proto->base.vtable = &s_visual_vtable;
     proto->base.on_frame = NULL; /* 出帧回调由 CommConfig 挂接 */
+    proto->rx_err = 0;
     return 0;
 }
 

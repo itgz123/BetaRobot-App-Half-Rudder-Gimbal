@@ -43,7 +43,8 @@
 /* 视觉协议派生结构体：仅编解码，不内嵌数据字段（首成员必须为 CommProto 基类） */
 typedef struct
 {
-    CommProto base; /* 基类（首成员） */
+    CommProto base;  /* 基类（首成员） */
+    uint32_t rx_err; /* 坏帧计数（CRC16 不符则丢弃；只增不清，调试用） */
 } CommProtoVisual;
 
 /**
@@ -64,7 +65,7 @@ typedef struct
         .base.media = (void *)&media_} /* 尾部无分号，调用处加 */
 
 /**
- * @brief 初始化视觉协议后端（挂 vtable；无内部状态）
+ * @brief 初始化视觉协议后端（挂 vtable + 清错误计数）
  * @param proto CommProtoVisual 实例指针（COMM_PROTO_VISUAL_DEF 定义）
  * @retval 0 成功；-1 参数非法
  */
