@@ -100,11 +100,22 @@ static void chassis_send_control(void)
 
     if ((sbus_inst.sbus_data.ch[4] > sbus_half) && (sbus_inst.daemon->is_online == 1))
     {
-        gimbal2chassis_data.mode = g2c_enable;
+        if (sbus_inst.sbus_data.ch[6] < -sbus_half)
+        {
+            gimbal2chassis_data.mode = g2c_normal;
+        }
+        else if (sbus_inst.sbus_data.ch[6] > sbus_half)
+        {
+            gimbal2chassis_data.mode = g2c_hole;
+        }
+        else
+        {
+            gimbal2chassis_data.mode = g2c_gyro;
+        }
     }
     else
     {
-        gimbal2chassis_data.mode = g2c_disable;
+        gimbal2chassis_data.mode = g2c_stop;
     }
 
     gimbal2chassis_data.vx = (Lib_Math_Fabs(vx_ch) < DEADZONE) ? 0.0f : vx_ch;
@@ -147,7 +158,8 @@ static void VisionSend(void)
 }
 static void sbus_control(void)
 {
-    cmd_cmd2gimbal_data.state = enable;
+    // 调底盘，临时注释云台使能
+    // cmd_cmd2gimbal_data.state = enable;
     pitch_ch = sbus_inst.sbus_data.ch[2];
     yaw_ch = sbus_inst.sbus_data.ch[3];
 }
