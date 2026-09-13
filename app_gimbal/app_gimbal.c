@@ -306,6 +306,18 @@ ITCM_RAM void AppGimbalRun(void)
     pitchup_mdata.position = (pitchup_motor.base.data_all.data.position - pitchup_position_0) - (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
     MotorData_s yaw_mdata = MotorGetData(&(yaw_motor.base));
 
+    // 换算为 axis lite 的反馈输入（lite 层不依赖 motor，故在 app 侧剥离 MotorData_s）
+    AxisLiteState_s pitchup_state = {
+        .position = (float)pitchup_mdata.position,
+        .speed = pitchup_mdata.speed,
+        .torque = pitchup_mdata.torque,
+    };
+    AxisLiteState_s yaw_state = {
+        .position = (float)yaw_mdata.position,
+        .speed = yaw_mdata.speed,
+        .torque = yaw_mdata.torque,
+    };
+
     // // 读取 BMI088 原始数据
     // imu = BMI088ReadInt(&bmi088);
 
@@ -343,7 +355,7 @@ ITCM_RAM void AppGimbalRun(void)
             .speed = gimbal_cmd2gimbal_data.pitch_v,
             .acceleration = gimbal_cmd2gimbal_data.pitch_a,
         };
-        pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_mdata, &pitchup_ref);
+        pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_state, &pitchup_ref);
     }
     // setref-pitchdown
     if (enable == gimbal_cmd2gimbal_data.state)
@@ -373,7 +385,7 @@ ITCM_RAM void AppGimbalRun(void)
             .speed = gimbal_cmd2gimbal_data.yaw_v,
             .acceleration = gimbal_cmd2gimbal_data.yaw_a,
         };
-        yaw_motor_setref = AxisMitLiteCalculate(&yaw_axis, &yaw_mdata, &yaw_ref);
+        yaw_motor_setref = AxisMitLiteCalculate(&yaw_axis, &yaw_state, &yaw_ref);
     }
 
     // send
