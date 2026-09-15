@@ -291,7 +291,7 @@ ITCM_RAM void AppCmdRun(void)
 
     // 2. 设置要发送的数据（默认失能 + 设定值清零）
     // .1. pitch和yaw
-    cmd_cmd2gimbal_data.mode = robot_mode_normal;
+    cmd_cmd2gimbal_data.mode = robot_mode_stop;
     cmd_cmd2gimbal_data.pitch_x = 0.0f;
     cmd_cmd2gimbal_data.pitch_v = 0.0f;
     cmd_cmd2gimbal_data.pitch_a = 0.0f;
