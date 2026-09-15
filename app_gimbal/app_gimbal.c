@@ -347,7 +347,7 @@ ITCM_RAM void AppGimbalRun(void)
     pitchdown_motor_setref = 0;
     yaw_motor_setref = 0;
     // setref-pitchup
-    if (enable == gimbal_cmd2gimbal_data.state)
+    if (robot_mode_normal == gimbal_cmd2gimbal_data.mode)
     {
         // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
         AxisMitLiteRef_s pitchup_ref = {
@@ -358,7 +358,7 @@ ITCM_RAM void AppGimbalRun(void)
         pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_state, &pitchup_ref);
     }
     // setref-pitchdown
-    if (enable == gimbal_cmd2gimbal_data.state)
+    if (robot_mode_normal == gimbal_cmd2gimbal_data.mode)
     {
         // 固定值+重力前馈+速度误差项+pitchup力矩单向叠加
         float diejia_pitchup_motor_setref = 0; // 要叠加在pitchdown的力矩
@@ -377,7 +377,7 @@ ITCM_RAM void AppGimbalRun(void)
                                  diejia_pitchup_motor_setref;                                // pitchup单向
     }
     // setref-yaw
-    if (enable == gimbal_cmd2gimbal_data.state)
+    if (robot_mode_normal == gimbal_cmd2gimbal_data.mode)
     {
         // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
         AxisMitLiteRef_s yaw_ref = {

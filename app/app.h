@@ -26,9 +26,11 @@ extern QueueHandle_t cmd2gimbal_queue_handle;
  *============================================*/
 typedef enum : uint8_t
 {
-    disable = 0,
-    enable = 1,
-} cmd2gimbal_state; // 状态机
+    robot_mode_stop = 0,
+    robot_mode_normal = 1,
+    robot_mode_gyro = 2,
+    robot_mode_hole = 3,
+} robot_mode; // 状态机 参考`app/half_rudder_gimbal/README.md`
 
 /* 视觉帧命令字（帧首字节；随帧传递供业务识别方向，不再用于帧定界） */
 typedef enum : uint8_t
@@ -81,13 +83,13 @@ typedef struct
 } gimbal2cmd_data_t;
 typedef struct
 {
-    cmd2gimbal_state state; // 状态机
-    float pitch_x;          // pitch轴设定位置
-    float pitch_v;          // pitch轴设定速度
-    float pitch_a;          // pitch轴设定加速度
-    float yaw_x;            // yaw轴设定位置
-    float yaw_v;            // yaw轴设定速度
-    float yaw_a;            // yaw轴设定加速度
+    robot_mode mode; // 状态机
+    float pitch_x;   // pitch轴设定位置
+    float pitch_v;   // pitch轴设定速度
+    float pitch_a;   // pitch轴设定加速度
+    float yaw_x;     // yaw轴设定位置
+    float yaw_v;     // yaw轴设定速度
+    float yaw_a;     // yaw轴设定加速度
 } cmd2gimbal_data_t;
 
 /*============================================
@@ -158,7 +160,7 @@ typedef struct
  * _Static_assert 校验 sizeof == 约定线长）。 */
 typedef struct
 {
-    uint8_t enabled; // 0：失能，1：使能
+    robot_mode enabled;
     // 设定速度
     float vx;
     float vy;

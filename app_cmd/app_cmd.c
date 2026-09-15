@@ -107,9 +107,9 @@ static void chassis_send_control(void)
         gimbal2chassis_data.enabled = 0;
     }
 
-    gimbal2chassis_data.vx = (Lib_Math_Fabs(vx_ch) < DEADZONE) ? 0.0f : vx_ch;
-    gimbal2chassis_data.vy = -((Lib_Math_Fabs(vy_ch) < DEADZONE) ? 0.0f : vy_ch);
-    gimbal2chassis_data.w = 0.0f; // TODO 转向（w）暂置 0
+    gimbal2chassis_data.vx = ((Lib_Math_Fabs(vx_ch) < DEADZONE) ? 0.0f : vx_ch) * chassis_translate_speed;
+    gimbal2chassis_data.vy = (-((Lib_Math_Fabs(vy_ch) < DEADZONE) ? 0.0f : vy_ch)) * chassis_translate_speed;
+    gimbal2chassis_data.w = 0.0f; // TODO 转向（w）暂置 0 // chassis_rotate_speed
 
     CommSend(&chassis_comm, (uint8_t *)&gimbal2chassis_data);
 }
@@ -147,8 +147,7 @@ static void VisionSend(void)
 }
 static void sbus_control(void)
 {
-    // 调底盘，临时注释云台使能
-    // cmd_cmd2gimbal_data.state = enable;
+    cmd_cmd2gimbal_data.mode = robot_mode_normal;
     pitch_ch = sbus_inst.sbus_data.ch[2];
     yaw_ch = sbus_inst.sbus_data.ch[3];
 }
@@ -160,7 +159,7 @@ static void keyboard_mouse_control(void)
 }
 static void visual_control(void)
 {
-    cmd_cmd2gimbal_data.state = enable;
+    cmd_cmd2gimbal_data.mode = robot_mode_normal;
     // 单位约定：视觉 pitch/yaw 为 deg（转 rad）；v/a 为 rad/s、rad/s²（不转）
     // 坐标系：pitch 为 base-relative（与 app_gimbal 一致）；yaw 为世界系（需标定对齐电机系）
     cmd_cmd2gimbal_data.pitch_x = DEG_TO_RAD(vision_recv_data.pitch_base_relative);
@@ -292,7 +291,7 @@ ITCM_RAM void AppCmdRun(void)
 
     // 2. 设置要发送的数据（默认失能 + 设定值清零）
     // .1. pitch和yaw
-    cmd_cmd2gimbal_data.state = disable;
+    cmd_cmd2gimbal_data.mode = robot_mode_normal;
     cmd_cmd2gimbal_data.pitch_x = 0.0f;
     cmd_cmd2gimbal_data.pitch_v = 0.0f;
     cmd_cmd2gimbal_data.pitch_a = 0.0f;
@@ -320,7 +319,7 @@ ITCM_RAM void AppCmdRun(void)
         planer_control(); // 规划期控制：sbus，图传，键鼠都是给2个通道的float
     }
     // .2. 发射
-    if ((sbus_inst.sbus_data.ch[7] > sbus_half) && (cmd_cmd2gimbal_data.state == enable))
+    if ((sbus_inst.sbus_data.ch[7] > sbus_half) && (cmd_cmd2gimbal_data.mode == robot_mode_normal))
     {
         cmd_cmd2shoot_data.fire_or_not = 1;
     }

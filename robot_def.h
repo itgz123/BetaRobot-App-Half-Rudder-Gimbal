@@ -16,4 +16,8 @@
 #define yaw_speed 10.0f
 #define yaw_acceleration 10.0f
 
+// 底盘平动，旋转速度(m/s,rad/s)
+#define chassis_translate_speed 5.0f
+#define chassis_rotate_speed 5.0f
+
 #endif // !__ROBOT_DEF_H
