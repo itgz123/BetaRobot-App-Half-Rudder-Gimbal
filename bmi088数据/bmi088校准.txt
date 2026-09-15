@@ -1,0 +1,1074 @@
+ ▐▛███▛█   Claude Code v2.1.267
+▝▜██████▀  deepseek-v4-flash · API Usage Billing
+  ▝▝ ▝▝    ~/projects/BetaRobot
+
+
+✻ Conversation compacted (ctrl+o for history)
+
+
+  Thought for 1s (ctrl+o to expand)
+
+● Bash(sed -n '180,200p' lib/lib_math/lib_math_vector.h)
+  ⎿      return result;
+     }
+     … +18 lines (ctrl+o to expand)
+  ⎿  Referenced file app/half_rudder_gimbal/app_gimbal/app_gimbal.c
+  ⎿  Read bsp/bsp_spi/bsp_spi.h (146 lines)
+  ⎿  Referenced file drv/drv_bmi088/drv_bmi088.c
+  ⎿  Read bsp/bsp_spi/bsp_spi.c (396 lines)
+  ⎿  Read lib/lib_mahony/lib_mahony.h (124 lines)
+
+  Thought for 1s (ctrl+o to expand)
+
+● 函数名是 Lib_Math_Vec3Length，不是 Vec3Norm。
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 1 line, removed 1 line
+      392  
+      393      /* ---- VOFA 调参派生量 ---- */
+      394      yaw_unwrapped = UnwrapYaw(euler.yaw);
+      395 -    acc_norm = Lib_Math_Vec3Norm(acc);                        
+      395 +    acc_norm = Lib_Math_Vec3Length(acc);                      
+      396      /* 由加速度计直接反算的 roll/pitch，与 lib_mahony 的 halfv
+            取同一约定
+      397       * （静止时 accel 指向 +Z、模长 1g）。静止且 acc 可信时，e
+           uler 与它之差 ≈ 0；
+      398       * 若残差 ≈ 2×euler，说明 acc 的符号约定与库不一致（校正会
+           往反方向推）。
+
+● Bash(cmake --build --preset Debug 2>&1 | tail -25)
+  ⎿  [0/2] Re-checking globbed directories...
+     [1/4] Building C object CMakeFiles/half_rudder_gimbal.dir/Debug/app/ha
+     lf_rudder_gimbal/app_gimbal/app_gimbal.c.obj
+     … +13 lines (ctrl+o to expand)
+
+● Bash(cmake --build --preset Release 2>&1 | tail -12)
+  ⎿  [2/7] Building C object CMakeFiles/half_rudder_gimbal.dir/Release/bsp/
+     bsp_spi/bsp_spi.c.obj
+     [3/7] Building C object CMakeFiles/half_rudder_gimbal.dir/Release/app/
+     … +13 lines (ctrl+o to expand)
+
+  Thought for 3s, searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● 编译通过了（Debug 42.25% RAM / 11.91% FLASH，Release 42.18% /
+  10.71%，无警告）。
+
+  改动内容
+
+  1. 修正编译错误：Lib_Math_Vec3Norm 不存在，改用
+  Lib_Math_Vec3Length（lib/lib_math/lib_math_vector.h:185）。
+
+  2. 新增 5 个派生量（app_gimbal.c，只观察、不参与控制）：
+  - yaw_unwrapped — yaw 解缠值，多圈连续
+  - acc_norm — 合加速度模长
+  - acc_roll_err / acc_pitch_err — 加速度反算角与滤波输出的残差
+  - imu_temp — BMI088 温度
+
+  3. VOFA 扩到 15 通道（CH0 仍为 DWT 时间戳，驱动自动填）：
+
+  ┌─────┬─────────────────────────┬─────┬───────────────┐
+  │ CH  │          内容           │ CH  │     内容      │
+  ├─────┼─────────────────────────┼─────┼───────────────┤
+  │ 1   │ euler.roll (rad)        │ 9   │ acc.z         │
+  ├─────┼─────────────────────────┼─────┼───────────────┤
+  │ 2   │ euler.pitch             │ 10  │ dt (ms)       │
+  ├─────┼─────────────────────────┼─────┼───────────────┤
+  │ 3   │ euler.yaw（wrap 到 ±π） │ 11  │ |acc| (m/s²)  │
+  ├─────┼─────────────────────────┼─────┼───────────────┤
+  │ 4   │ gyro.x (rad/s)          │ 12  │ yaw_unwrapped │
+  ├─────┼─────────────────────────┼─────┼───────────────┤
+  │ 5   │ gyro.y                  │ 13  │ 温度 (℃)      │
+  ├─────┼─────────────────────────┼─────┼───────────────┤
+  │ 6   │ gyro.z                  │ 14  │ roll 残差     │
+  ├─────┼─────────────────────────┼─────┼───────────────┤
+  │ 7   │ acc.x                   │ 15  │ pitch 残差    │
+  ├─────┼─────────────────────────┼─────┼───────────────┤
+  │ 8   │ acc.y                   │     │               │
+  └─────┴─────────────────────────┴─────┴───────────────┘
+
+  采集要点
+
+  静态（静止不动，建议采 30 s 以上，最好同时记一下上电后多久，看温度漂移）：
+  - CH4-6 均值 → 陀螺零偏；CH4-6 标准差 → 噪声水平（定 kp 用）
+  - CH11 应稳定在 9.80665 附近；如果偏离超过 ±0.3，lib_mahony 
+    会整帧跳过加速度计校正，kp 怎么调都没用
+  - CH14/15 静止收敛后应 ≈ 0，这个残差量级直接对应 kp 的稳态余量
+  - CH3/CH12 看 yaw 漂移速率（六轴 yaw 不可观测，只能标定不能消除）
+
+  转 yaw（底盘固定，绕 yaw 转，最好带上正反转 + 快慢两档）：
+  - 用 CH12 而不是 CH3 —— CH3 在 ±π 会跳变
+  - CH12 对 cumsum(CH6 * CH10/1000) 做线性拟合：斜率比 = 标度误差，截距 = 零偏
+  - 同时看 CH1/2/14/15 应基本不动；若跟着动说明 yaw
+    轴和重力轴没对齐，或安装有倾斜
+
+  采集到数据后把 CSV 给我，我用 Python 拟合零偏/标度并给出 kp
+  建议值。注意目前驱动里还没有 gyro_offset 的落点，标定出零偏后需要在 drv_bmi088
+  加一个偏移字段。
+
+✻ Cogitated for 2m 45s · done 20:33
+
+※ recap: Goal is tuning the gimbal's BMI088 and Mahony filter. The VOFA debug output is now expanded to 15 channels and builds clean. Next you collect static and yaw-rotation data and send me the CSV for analysis.
+
+❯ @ignore/static.csv @ignore/dynamic.csv 分析数据，调整参数                     
+
+  Thought for 15s, read 1 file, listed 1 directory (ctrl+o to expand)
+
+● Bash(python3 -c "import numpy,pandas;print(numpy.__version__,
+      pandas.__version__)"; grep -rn
+      "kp\s*=\|ki\s*=\|Mahony_Init_Config_s\|MahonyInit" app/half_rudder_gimba…)
+  ⎿  Traceback (most recent call last):
+       File "<string>", line 1, in <module>
+     ModuleNotFoundError: No module named 'pandas'
+     … +12 lines (ctrl+o to expand)
+
+● Bash(sed -n '295,330p' app/half_rudder_gimbal/app_gimbal/app_gimbal.c; echo
+      "=== chassis ==="; sed -n '695,715p'
+      app/half_rudder_chassis/app_chassis/app_chassis.c)
+  ⎿           * 反而把 250Hz 以上的噪声折返进来；1000Hz 配 116Hz 带宽噪声更
+     低 */
+             .gyro_conf = BMI088_GYRO_CONF_1000_116,
+     … +55 lines (ctrl+o to expand)
+
+  Thought for 5s (ctrl+o to expand)
+
+● Bash(python3 -c "import numpy;print('numpy',numpy.__version__)"; echo "===
+      QuatToEuler ==="; grep -n "QuatToEuler" -A 30
+      lib/lib_math/lib_math_quaternion.h | head -5…)
+  ⎿  numpy 2.5.2
+     === QuatToEuler ===
+     ugrep: warning: lib/lib_math/lib_math_quaternion.h: No such file or di
+     rectory
+
+❯ 实际运动会更剧烈，现在底盘是静止的                                            
+
+  Thought for 4s, listed 1 directory (ctrl+o to expand)
+
+● Bash(sed -n '135,200p' lib/lib_math/lib_math_quat.h)
+  ⎿      vector3_t u;
+         u.x = q.w * t.x + (q_vec.y * t.z - q_vec.z * t.y);
+         u.y = q.w * t.y + (q_vec.z * t.x - q_vec.x * t.z);
+     … +63 lines (ctrl+o to expand)
+
+  Thought for 4s, searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Bash(cat > /tmp/an1.py <<'EOF'
+      import numpy as np…)
+  ⎿  Error: Exit code 1
+     ======================================================================
+     ignore/static.csv (27655, 16)
+     duration 55.31 s, samples 27655, rate 500.0 Hz
+     dt_ms  mean 2.0000 std 0.2199 min 0.0000 max 4.0080
+
+     name             mean        std        min        max        ptp
+     Traceback (most recent call last):
+       File "/tmp/an1.py", line 14, in <module>
+         print("%-10s %10.5f %10.5f %10.5f %10.5f 
+     %10.5f"%(n,c.mean(),c.std(),c.min(),c.max(),c.ptp()))
+     … +2 lines (ctrl+o to expand)
+
+● Bash(cat > /tmp/an1.py <<'EOF'
+      import numpy as np…)
+  ⎿  ======================================================================
+     ==
+     ignore/static.csv (27655, 16)
+     … +41 lines (ctrl+o to expand)
+  Thought for 20s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(cat > /tmp/sim.py <<'EOF'
+      import numpy as np…)
+  ⎿  max |sim-rec| roll 0.00000 pitch 0.00000 yaw 0.00000
+
+       t(s)   rec_pitch  sim_pitch   rec_roll  sim_roll
+     … +11 lines (ctrl+o to expand)
+
+  Thought for 20s (ctrl+o to expand)
+
+● Bash(cat > /tmp/var.py <<'EOF'
+      import numpy as np…)
+  ⎿  静态均值 acc = -2.7138 -0.2952 9.4101  |acc|=9.7980
+     真值(加速度反算): roll -0.03136  pitch +0.28064
+     固件实测        : roll -0.05516  pitch +0.52584
+     … +11 lines (ctrl+o to expand)
+
+  Thought for 12s (ctrl+o to expand)
+
+● 复现了固件行为。现在做完整分析：
+
+● Bash(cat > /tmp/an2.py <<'EOF'
+      import numpy as np…)
+  ⎿  ###### 静态 ######
+     dt_ms==0 比例 0.0%   唯一时间戳数 27655 / 27655
+     gx  bias +0.00245 rad/s (+0.1403 deg/s)  noise(std) 0.00351 rad/s (0.2
+     … +25 lines (ctrl+o to expand)
+
+  Thought for 15s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(cat > /tmp/an3.py <<'EOF'
+      import numpy as np…)
+  ⎿  累计 ∫gz dt = 4.450 rad (255 deg)
+
+     固件 yaw_unw(CH12)       终点    264.39 deg | 斜率(标度) +1.04591 | 截
+     … +9 lines (ctrl+o to expand)
+
+  Thought for 16s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(sed -n '255,325p' drv/drv_bmi088/drv_bmi088.c; echo "=== 830-845 ===";
+      sed -n '825,850p' drv/drv_bmi088/drv_bmi088.c)
+  ⎿  /**
+      * @brief SPI 传输完成回调（运行在 RX DMA 完成中断里）
+      * @note Acc 完成后再调度温度读取（限速1.28s）
+     … +93 lines (ctrl+o to expand)
+
+  Thought for 3s (ctrl+o to expand)
+
+● Bash(sed -n '355,445p' drv/drv_bmi088/drv_bmi088.c)
+  ⎿  static void BMI088_CheckPendingIT(BMI088Instance *inst)
+     {
+         while (inst->pending_mask != 0 && !inst->transfer_busy)
+     … +88 lines (ctrl+o to expand)
+
+  Thought for 3s (ctrl+o to expand)
+
+● Bash(grep -n "BMI088_ParseTempCelsius" -A 22 drv/drv_bmi088/drv_bmi088.c | sed
+      -n '/^[0-9]*:static float/,/^[0-9]*-}/p' | head -40; echo "===
+      StartSensorDMA ==="; gr…)
+  ⎿  119:static float BMI088_ParseTempCelsius(const uint8_t *rx_buff);
+     120-static BMI088_Data_t BMI088_PackData(BMI088Instance *inst, const u
+     int8_t acc_raw[BMI088_RAW_DATA_SIZE], const uint8_t gyro_raw[BMI088_RA
+     … +94 lines (ctrl+o to expand)
+
+  Thought for 19s, searched for 2 patterns (ctrl+o to expand)
+
+● Bash(grep -n "BMI088_Init_Config_s" -A 25 drv/drv_bmi088/drv_bmi088.h; echo
+      "=== config use ==="; grep -n "acc_offset\|gyro_offset" -B3 -A3
+      drv/drv_bmi088/drv_bmi088…)
+  ⎿  === config use ===
+     483-static BMI088_Data_t BMI088_PackData(BMI088Instance *inst, const u
+     int8_t acc_raw[BMI088_RAW_DATA_SIZE], const uint8_t gyro_raw[BMI088_RA
+     … +21 lines (ctrl+o to expand)
+
+  Thought for 2s (ctrl+o to expand)
+
+● Bash(grep -n "Config_s\|typedef struct" drv/drv_bmi088/drv_bmi088.h | head;
+      echo "---- cfg struct ----"; sed -n
+      '/BMI088_Init_Config_s\|_Config_s/,+30p' drv/drv_bmi0…)
+  ⎿  65:typedef struct
+     85:} BMI088_Config_s;
+     89:typedef struct
+     … +49 lines (ctrl+o to expand)
+
+● Bash(sed -n '60,90p' drv/drv_bmi088/drv_bmi088.h)
+  ⎿   * @brief BMI088 配置结构体（用于 BMI088Config）
+      *
+      * @note 包含硬件枚举和传感器运行时参数。
+     … +28 lines (ctrl+o to expand)
+
+  Thought for 6s (ctrl+o to expand)
+
+● Bash(cat > /tmp/an4.py <<'EOF'
+      import numpy as np…)
+  ⎿  ∫gz dt          =    4.450 rad
+     ∫(ψ̇)dt 欧拉运动学 =    4.629 rad   比值 1.04018
+     系数 1/cos(pitch)= 1.04071
+     … +13 lines (ctrl+o to expand)
+
+  Thought for 5s (ctrl+o to expand)
+
+● Bash(cat > /tmp/an5.py <<'EOF'
+      import numpy as np…)
+  ⎿  时段(s)      gx_bias    gy_bias    gz_bias   (deg/s)          |acc|
+      0.0- 9.2    +0.1431  +0.1034  +0.1153        9.7991
+      9.2-18.4    +0.1381  +0.1060  +0.1138        9.7983
+     … +19 lines (ctrl+o to expand)
+
+  Thought for 11s (ctrl+o to expand)
+
+● Bash(python3 -c "
+      import numpy as np…)
+  ⎿  ignore/static.csv    |acc| 均值9.798  min9.705 max9.898  门槛(|acc|-9.
+     8|>2.94)触发率 0.00%
+     ignore/dynamic.csv   |acc| 均值9.868  min6.280 max14.287  门槛(|acc|-9
+     .8|>2.94)触发率 0.05%
+
+❯ 主要需要imu的yaw轴数据，而且imu可能并不水平，而是倾斜放置                     
+  Thought for 17s (ctrl+o to expand)
+
+● Bash(cat > /tmp/an6.py <<'EOF'
+      import numpy as np…)
+  ⎿  Error: Exit code 1
+     静态重力方向(IMU系) = (-0.2770 -0.0301 +0.9604) → roll -1.797 pitch +16.079
+     deg
+     Traceback (most recent call last):
+       File "/tmp/an6.py", line 11, in <module>
+         print("\n动态期间 acc 单位向量 与静止方向 夹角: mean %.3f deg  p95 %.3f
+     deg  max %.3f deg"%(np.degrees(np.arccos(np.clip(dot,-1,1))).mean(),np.deg
+     rees(np.arccos(np.clip(dot,-1,1)))*0+np.percentile(np.degrees(np.arccos(np.
+     clip(dot,-1,1))),95),np.degrees(np.arccos(np.clip(dot,-1,1))).max()))
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     ~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     TypeError: only 0-dimensional arrays can be converted to Python scalars
+
+● Bash(cd /tmp && sed -i
+      's|np.degrees(np.arccos(np.clip(dot,-1,1)))\*0+np.percentile(np.degrees(np
+      .arccos(np.clip(dot,-1,1))),95)|np.percentile(np.degrees(np.arccos(n…)
+  ⎿  Error: Exit code 1
+     Traceback (most recent call last):
+       File "/tmp/an6.py", line 2, in <module>
+         d=np.genfromtxt("ignore/dynamic.csv",delimiter=',',skip_header=1)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       File "/home/trw/.pyenv/versions/3.12.6/lib/python3.12/site-packages/numpy
+     /lib/_npyio_impl.py", line 1982, in genfromtxt
+         fid = np.lib._datasource.open(fname, 'rt', encoding=encoding)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+       File "/home/trw/.pyenv/versions/3.12.6/lib/python3.12/site-packages/numpy
+     /lib/_datasource.py", line 192, in open
+         return ds.open(path, mode, encoding=encoding, newline=newline)
+     … +4 lines (ctrl+o to expand)
+
+● Bash(sed -i 's|"ignore/|"/home/trw/projects/BetaRobot/ignore/|g' /tmp/an6.py
+      && python3 /tmp/an6.py)
+  ⎿  静态重力方向(IMU系) = (-0.2770 -0.0301 +0.9604) → roll -1.797 pitch +1
+     6.079 deg
+     … +13 lines (ctrl+o to expand)
+
+  Thought for 14s (ctrl+o to expand)
+
+● 这是决定性结果。让我确认一下配置结构体的初始化路径：
+
+● Bash(grep -n "memset(inst\|inst->acc_range =\|inst->gyro_range ="
+      drv/drv_bmi088/drv_bmi088.c; echo "=== Config head ==="; sed -n '/^int8_t
+      BMI088Config/,/^}/p' drv/…)
+  ⎿  135:    memset(inst->tx_buff, BMI088_SPI_DUMMY_BYTE, BMI088_BUFF_SIZE)
+     ;
+     149:    memset(inst->tx_buff, BMI088_SPI_DUMMY_BYTE, BMI088_BUFF_SIZE)
+     … +67 lines (ctrl+o to expand)
+
+  Thought for 2s (ctrl+o to expand)
+
+● Update(lib/lib_mahony/lib_mahony.c)
+  ⎿  Added 8 lines, removed 2 lines
+      147          recip_norm = 1.0f / acc_norm;
+      148          acc = Lib_Math_Vec3Scale(acc, recip_norm);
+      149  
+      150 -        /* 预估重力方向在机体坐标系中的分量 */                
+      150 +        /* 预估重力"上"方向在机体坐标系中的分量（R^T·ẑ 的一半 
+          +）                                                            
+      151 +         *   R^T·ẑ = (2(q1q3-q0q2), 2(q0q1+q2q3), 1-2(q1²+q2²)
+          +)                                                             
+      152 +         *   取一半 → (q1q3-q0q2, q0q1+q2q3, 0.5-(q1²+q2²))   
+      153 +         * 第三项必须写成 q0q0 - 0.5f + q3q3：单位四元数下    
+      154 +         * q0²-q1²-q2²+q3² = 2×(0.5-q1²-q2²) 恰好是正确值的两 
+          +倍，                                                          
+      155 +         * 会让 halfv 的 z 分量相对 x/y 偏大一倍，叉积误差方向
+          +被扭曲，                                                      
+      156 +         * 滤波器收敛到约 2 倍倾角上（实测：IMU 倾斜 16.1°，输
+          +出 30.1°）。 */                                               
+      157          halfvx = q1q3 - q0q2;
+      158          halfvy = q0q1 + q2q3;
+      153 -        halfvz = q0q0 - q1q1 - q2q2 + q3q3;                   
+      159 +        halfvz = q0q0 - 0.5f + q3q3;                          
+      160  
+      161          /* 加速度计误差 = 测量值 × 预估值（叉积） */
+      162          halfex = acc.y * halfvz - acc.z * halfvy;
+
+● Now暴露驱动里已有的零偏字段到配置：
+
+● Update(drv/drv_bmi088/drv_bmi088.h)
+  ⎿  Added 2 lines
+      82      BMI088_GyroConf_e gyro_conf;      // 陀螺仪 ODR+BW 组合配置
+          （见 BMI088_GyroConf_e）
+      83      BMI088_WorkMode_e work_mode;      // 工作模式（轮询/中断）
+      84      uint32_t spi_timeout_ms;          // SPI IT/DMA 传输超时(ms
+          )
+      85 +    const float *gyro_offset;         // 陀螺仪零偏 (rad/s)，静
+         +止标定值，原始数据减去它；NULL 表示不补偿                      
+      86 +    const float *acc_offset;          // 加速度计零偏 (m/s²)， 
+         +同上；NULL 表示不补偿                                          
+      87  } BMI088_Config_s;
+      88  /**
+      89   * @brief IMU 数据结构体
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(drv/drv_bmi088/drv_bmi088.c)
+  ⎿  Added 18 lines
+      758      inst->work_mode = config->work_mode;
+      759      inst->spi_timeout_ms = config->spi_timeout_ms; /* 完全按 C
+           onfig 配置的超时时间使用 */
+      760  
+      761 +    /* 零偏补偿：陀螺仪零偏是 yaw 漂移的唯一来源（六轴滤波 yaw
+          + 不可观测，                                                   
+      762 +     * 加速度计校正管不到 z 轴），必须在原始数据里减掉。      
+      763 +     * 不传则保持 0（实例是静态存储，初值已为 0） */          
+      764 +    if (config->gyro_offset != NULL)                          
+      765 +    {                                                         
+      766 +        for (uint8_t i = 0; i < BMI088_AXIS_NUM; i++)         
+      767 +        {                                                     
+      768 +            inst->gyro_offset[i] = config->gyro_offset[i];    
+      769 +        }                                                     
+      770 +    }                                                         
+      771 +    if (config->acc_offset != NULL)                           
+      772 +    {                                                         
+      773 +        for (uint8_t i = 0; i < BMI088_AXIS_NUM; i++)         
+      774 +        {                                                     
+      775 +            inst->acc_offset[i] = config->acc_offset[i];      
+      776 +        }                                                     
+      777 +    }                                                         
+      778 +                                                              
+      779      // 配置 SPI 阻塞模式（AccInit/GyroInit 使用阻塞传输）
+      780      SPI_Config_s spi_cfg = {
+      781          .spi_e = config->spi_e,
+
+● Now修温度饿死问题：
+
+● Update(drv/drv_bmi088/drv_bmi088.c)
+  ⎿  Added 12 lines, removed 6 lines
+      354   */
+      355  static void BMI088_CheckPendingIT(BMI088Instance *inst)
+      356  {
+      357 +    /* 温度必须排在最前，否则会永远饿死：本函数只在 BMI088_Int
+          +Callback 里调用，                                             
+      358 +     * 而那里在调用前一定刚置上了 ACC 或 GYRO 位。若先判 ACC/G
+          +YRO，                                                         
+      359 +     * 每轮都会清掉它们并启动传输（transfer_busy=1 → 退出 whil
+          +e），                                                         
+      360 +     * TEMP 位一直留在 mask 里轮不到，温度恒为 0。            
+      361 +     * 温度每 1.28s 才读一次（约 1/640 次传输），代价是延后一 
+          +个 acc 样本，                                                 
+      362 +     * 而 0x22/0x23 与加速度输出寄存器无关，不会污染数据 */   
+      363      while (inst->pending_mask != 0 && !inst->transfer_busy)
+      364      {
+      359 -        if (inst->pending_mask & BMI088_PENDING_ACC)          
+      365 +        if (inst->pending_mask & BMI088_PENDING_TEMP)         
+      366          {
+      367 +            inst->pending_mask &= (uint8_t)~BMI088_PENDING_TEM
+          +P;                                                            
+      368 +            BMI088_StartSensorDMA(inst, BMI088_SENSOR_TEMP);  
+      369 +        }                                                     
+      370 +        else if (inst->pending_mask & BMI088_PENDING_ACC)     
+      371 +        {                                                     
+      372              inst->pending_mask &= (uint8_t)~BMI088_PENDING_ACC
+           ;
+      373              inst->int_timestamp = inst->pending_t_acc;
+      374              BMI088_StartSensorDMA(inst, BMI088_SENSOR_ACC);
+     ...
+      379              inst->int_timestamp = inst->pending_t_gyro;
+      380              BMI088_StartSensorDMA(inst, BMI088_SENSOR_GYRO);
+      381          }
+      371 -        else if (inst->pending_mask & BMI088_PENDING_TEMP)    
+      372 -        {                                                     
+      373 -            inst->pending_mask &= (uint8_t)~BMI088_PENDING_TEM
+          -P;                                                            
+      374 -            BMI088_StartSensorDMA(inst, BMI088_SENSOR_TEMP);  
+      375 -        }                                                     
+      382      }
+      383  }
+      384  
+
+  Thought for 1s, read 1 file (ctrl+o to expand)
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 7 lines, removed 3 lines
+      295           * 反而把 250Hz 以上的噪声折返进来；1000Hz 配 116Hz 带
+           宽噪声更低 */
+      296          .gyro_conf = BMI088_GYRO_CONF_1000_116,
+      297          .work_mode = BMI088_MODE_INT,
+      298 -        .spi_timeout_ms = 10, // SPI IT/DMA 传输超时(ms)      
+      298 +        .spi_timeout_ms = 10,   // SPI IT/DMA 传输超时(ms)    
+      299 +        .gyro_offset = s_gyro_offset, // 静止标定零偏，见 s_gy
+          +ro_offset 定义                                                
+      300      };
+      301      BSP_ASSERT_APP_CALL(BMI088Config(&bmi088, &bmi088_cfg));
+      302      // 初始化 Mahony 滤波器
+      303      /* kp：加速度计校正增益。实现里 gyro += kp * halfex，halfv
+            只有旋转矩阵的一半，
+      304       *     故等效增益为 kp/2（kp=1.0 ≈ Madgwick 默认 Kp=0.5）
+           ，误差时间常数约 2s。
+      304 -     * ki：陀螺仪零偏估计。当前置 0，先用 VOFA 静态数据测出零 
+          -偏，再决定是否硬编码补偿，                                    
+      305 -     *     避免 ki 直接把加速度计噪声积进零偏里 */            
+      305 +     *     实测加速度计角度噪声仅 0.14°(rms)，kp 提到 2~5 噪声
+          +代价仍可忽略，                                                
+      306 +     *     但大机动时加速度计不可信，宁可信陀螺仪，故维持 1.0 
+          +。                                                            
+      307 +     * ki：陀螺仪零偏估计。置 0 —— 六轴 yaw 不可观测，ki 的 z 
+          +分量没有可信的                                                
+      308 +     *     校正源，反而会把加速度计噪声积成假零偏。改用实测零 
+          +偏硬补偿，                                                    
+      309 +     *     确定性更好（见 s_gyro_offset）。 */                
+      310      Mahony_Init_Config_s mahony_cfg = {
+      311          .kp = 1.0f,
+      312          .ki = 0.0f,
+
+  Thought for 2s, read 1 file (ctrl+o to expand)
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 10 lines
+      36   * 避免一次大 dt 让四元数一步跳变 */
+      37  #define IMU_DT_MAX_S (0.01f)
+      38  
+      39 +/* 陀螺仪零偏 (rad/s)，静止 55s 实测（本机 IMU 倾斜安装：roll -
+         +1.80° pitch +16.08°）：                                        
+      40 + *   gx +0.00245  gy +0.00187  gz +0.00200   →  +0.140 / +0.107
+         + / +0.115 °/s                                                  
+      41 + * 55s 内各窗口漂移 < 0.002°/s，稳定到可以当常数用。           
+      42 + * 为什么必须补偿：六轴 Mahony 的 yaw 完全来自陀螺积分，加速度 
+         +计对它没有任何                                                 
+      43 + * 校正能力，不补偿就是纯漂移。实测 yaw 轴上的等效零偏         
+      44 + *   bias·(转动轴单位向量) = 0.00118 rad/s = 0.068 °/s = 4.1 °/
+         +min，                                                          
+      45 + * 与静止段 yaw 斜率实测值完全一致。                           
+      46 + * 换 IMU / 拆装后必须重新标定（kicad 板载加热会改变温度，零偏 
+         +随温度漂）。 */                                                
+      47 +static const float s_gyro_offset[3] = {0.00245f, 0.00187f, 0.00
+         +200f};                                                         
+      48 +                                                               
+      49  /* VOFA 调参用派生量（只在 AppGimbalRun 里更新，仅供观察，不参
+          与控制） */
+      50  static float yaw_unwrapped = 0.0f; // yaw 解缠值 (rad)：转大角
+          度时不在 ±π 处跳变
+      51  static float acc_norm = 0.0f;      // 合加速度模长 (m/s^2)：静
+          止应 ≈ 9.80665
+
+  Thought for 2s (ctrl+o to expand)
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 1 line, removed 1 line
+      43   * 校正能力，不补偿就是纯漂移。实测 yaw 轴上的等效零偏
+      44   *   bias·(转动轴单位向量) = 0.00118 rad/s = 0.068 °/s = 4.1 °/
+          min，
+      45   * 与静止段 yaw 斜率实测值完全一致。
+      46 - * 换 IMU / 拆装后必须重新标定（kicad 板载加热会改变温度，零偏 
+         -随温度漂）。 */                                                
+      46 + * 换 IMU / 拆装后必须重新标定：板载加热（TIM_HEATER）与温升都 
+         +会改变零偏。 */                                                
+      47  static const float s_gyro_offset[3] = {0.00245f, 0.00187f, 0.00
+          200f};
+      48  
+      49  /* VOFA 调参用派生量（只在 AppGimbalRun 里更新，仅供观察，不参
+          与控制） */
+
+  Thought for 6s, read 1 file (ctrl+o to expand)
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 16 lines
+      399      acc.x = imu.acc[0];
+      400      acc.y = imu.acc[1];
+      401      acc.z = imu.acc[2];
+      402 +                                                              
+      403 +    /* 上电姿态播种：用第一帧可信的加速度计反算 roll/pitch 直 
+          +接写进四元数。                                                
+      404 +     * 不播种的话滤波器从单位四元数慢慢收敛（kp=1 → τ≈2s，实测
+          +要约 6~10s），                                                
+      405 +     * 这段过程里 ① 姿态全是错的 ② 加速度计校正的 z 分量会把 y
+          +aw 顺带推偏约 3°。                                            
+      406 +     * yaw 无法从加速度计观测，取 0 作为航向基准。 */         
+      407 +    if (!attitude_seeded && imu.time_stamp_g > 0 && Lib_Math_F
+          +abs(acc_norm_est - 9.80665f) < 2.0f)                          
+      408 +    {                                                         
+      409 +        attitude_seeded = 1;                                  
+      410 +        euler_t init_e = {                                    
+      411 +            .roll = Lib_Math_Atan2(acc.y, acc.z),             
+      412 +            .pitch = Lib_Math_Atan2(-acc.x, Lib_Math_Sqrt(acc.
+          +y * acc.y + acc.z * acc.z)),                                  
+      413 +            .yaw = 0.0f,                                      
+      414 +        };                                                    
+      415 +        mahony.quat = Lib_Math_EulerToQuat(init_e);           
+      416 +    }                                                         
+      417 +                                                              
+      418      MahonyUpdate(&mahony, gyro, acc, dt);
+      419  
+      420      // 从 Mahony 四元数解算欧拉角 (rad)
+
+  Thought for 2s (ctrl+o to expand)
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 2 lines, removed 1 line
+      404       * 不播种的话滤波器从单位四元数慢慢收敛（kp=1 → τ≈2s，实测
+           要约 6~10s），
+      405       * 这段过程里 ① 姿态全是错的 ② 加速度计校正的 z 分量会把 y
+           aw 顺带推偏约 3°。
+      406       * yaw 无法从加速度计观测，取 0 作为航向基准。 */
+      407 -    if (!attitude_seeded && imu.time_stamp_g > 0 && Lib_Math_F
+          -abs(acc_norm_est - 9.80665f) < 2.0f)                          
+      407 +    acc_norm = Lib_Math_Vec3Length(acc);                      
+      408 +    if (!attitude_seeded && imu.time_stamp_g > 0 && Lib_Math_F
+          +abs(acc_norm - 9.80665f) < 2.0f)                              
+      409      {
+      410          attitude_seeded = 1;
+      411          euler_t init_e = {
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Removed 1 line
+      423  
+      424      /* ---- VOFA 调参派生量 ---- */
+      425      yaw_unwrapped = UnwrapYaw(euler.yaw);
+      426 -    acc_norm = Lib_Math_Vec3Length(acc);                      
+      426      /* 由加速度计直接反算的 roll/pitch，与 lib_mahony 的 halfv
+            取同一约定
+      427       * （静止时 accel 指向 +Z、模长 1g）。静止且 acc 可信时，e
+           uler 与它之差 ≈ 0；
+      428       * 若残差 ≈ 2×euler，说明 acc 的符号约定与库不一致（校正会
+           往反方向推）。
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Error editing file
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 1 line
+      52  static float acc_roll_err = 0.0f;  // roll 校正残差 (rad)：eule
+          r.roll - 加速度反算 roll
+      53  static float acc_pitch_err = 0.0f; // pitch 校正残差 (rad)
+      54  static float imu_temp = 0.0f;      // BMI088 温度 (℃)：陀螺仪零
+          偏随温度漂移
+      55 +static uint8_t attitude_seeded = 0; // 上电姿态是否已用加速度计
+         +播种                                                           
+      56  BMI088_INSTANCE_DEF(bmi088);
+      57  MAHONY_INSTANCE_DEF(mahony);
+      58  
+
+  Thought for 3s (ctrl+o to expand)
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 2 lines, removed 2 lines
+      506       *   CH12  : yaw 解缠值 (rad)，转多圈连续，采集 yaw 旋转数
+           据时用它而不是 CH3
+      507       *   CH13  : BMI088 温度 (℃)，陀螺仪零偏随温度漂移，可用来
+           判断静态零偏是否有效
+      508       *   CH14  : roll 校正残差 (rad) = euler.roll - 加速度反算
+            roll，
+      509 -     *           静止时应 ≈ 0；若 ≈ 2×euler.roll 说明 acc 符号
+          -约定反了。                                                    
+      510 -     *           残差量级对应 kp 的稳态余量，是调 kp 的主要依 
+          -据                                                            
+      509 +     *           静止收敛后应 ≈ 0（只剩 2*bias/kp 的稳态余量，
+          +零偏补偿后应 < 0.01°）；                                      
+      510 +     *           若残差 ≈ 2×euler.roll 说明 halfv 或 acc 符号 
+          +约定错了                                                      
+      511       *   CH15  : pitch 校正残差 (rad)，同上
+      512       *
+      513       * 调参用法：
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 5 lines, removed 2 lines
+      513       * 调参用法：
+      514       *   静态采集 —— 用 CH4-6 求陀螺仪零偏(均值)与噪声(标准差)
+           ，CH11 确认 acc 可信，
+      515       *               CH1-2/CH14-15 看 roll/pitch 是否收敛且无
+           静差，CH3/CH12 看 yaw 漂移速率
+      516 -     *   转动 yaw —— 底盘固定只转 yaw，用 CH12 与 cumsum(CH6*C
+          -H10/1000) 对比，                                              
+      517 -     *               斜率差即标度误差，截距差即零偏；同时 CH1-
+          -2/CH14-15 应基本不动                                          
+      516 +     *   转动 yaw —— 底盘固定只转 yaw，用 CH12 与 cumsum(CH6*C
+          +H10/1000) 对比。                                              
+      517 +     *               注意：IMU 倾斜安装时两者本来就不相等，比 
+          +值 = 1/cos(pitch)                                             
+      518 +     *               （本机 pitch≈16° → 1.04），这是欧拉角运动
+          +学耦合、不是标度误差；                                        
+      519 +     *               要核标度就把 CH12 与"陀螺在转动轴上的投影
+          +积分"比。                                                     
+      520 +     *               同时 CH1-2/CH14-15 应基本不动            
+      521       *
+      522       * 注意：drv_axis_mit_lite 的 vofa_enable 同样占用 CH1~CH1
+           2，
+      523       *       若后续要开某个轴的调试输出，需先让出/错开这些通道
+            */
+
+● Bash(cmake --build --preset Debug 2>&1 | tail -20)
+  ⎿  [0/2] Re-checking globbed directories...
+     [1/7] Building C object CMakeFiles/half_rudder_gimbal.dir/Debug/drv/dr
+     v_bmi088/drv_bmi088_heater.c.obj
+     … +14 lines (ctrl+o to expand)
+
+  Thought for 3s (ctrl+o to expand)
+
+● Bash(cat > /tmp/verify.py <<'EOF'
+      import numpy as np…)
+  ⎿  静态(修复+零偏补偿+播种)：
+       t=0.14s roll -1.704 pitch +16.130  |  收敛 roll -1.790 pitch +16.071
+      deg
+     … +3 lines (ctrl+o to expand)
+
+  Thought for 5s (ctrl+o to expand)
+
+● Bash(cat >> /tmp/verify.py <<'EOF'…)
+  ⎿  动态 yaw 追踪: 斜率 1.04348 (1.0 为无标度误差), 全程转角 260 deg
+     修正后 vs 真实转角: 斜率 1.00072  截距 -1.8554 deg
+     (修复前固件实测斜率
+      1.00174)
+
+  Thought for 11s, searched for 1 pattern (ctrl+o to expand)
+
+● Bash(cmake --build --preset Release 2>&1 | tail -12; echo "=== 可用 app /
+      如何切换 ==="; grep -rn "APP_NAME" user_cfg.h cmake/*.cmake CMakeLists.txt
+      2>/dev/null | head -20)
+  ⎿  [2/7] Building C object CMakeFiles/half_rudder_gimbal.dir/Release/lib/
+     lib_mahony/lib_mahony.c.obj
+     [3/7] Building C object CMakeFiles/half_rudder_gimbal.dir/Release/app/
+     … +32 lines (ctrl+o to expand)
+
+  Thought for 3s (ctrl+o to expand)
+
+● Bash(ninja -C build -t targets all 2>/dev/null | grep -i "half_rudder" | head
+      -5; echo "---"; cmake --build build --target half_rudder_chassis --config
+      Debug 2>&1 |…)
+  ⎿  /home/trw/projects/BetaRobot/app/half_rudder_chassis/CMakeLists.txt: p
+     hony
+     /home/trw/projects/BetaRobot/app/half_rudder_chassis/app_cfg.h: phony
+     … +15 lines (ctrl+o to expand)
+
+  Thought for 12s, searched for 2 patterns (ctrl+o to expand)
+
+● Bash(sed -n '470,560p' drv/drv_bmi088/drv_bmi088_heater.c)
+  ⎿               *     = (ARR+1) * (100 - duty_percent) / 100
+                  */
+                 heat_ccr = (uint32_t)((uint64_t)(BMI088_HEAT_TIM8_ARR + 1U
+     … +88 lines (ctrl+o to expand)
+
+  Thought for 10s, searched for 1 pattern (ctrl+o to expand)
+
+● 分析完成，发现了一个致命 bug 和几个真实问题。全部已修并编译通过（Debug
+  42.25%/12.37%，Release 42.18%/11.15%）。
+
+  1. 致命：Mahony 的 halfvz 写错，倾角读数偏大一倍
+
+  lib/lib_mahony/lib_mahony.c:153
+
+  halfvz = q0q0 - q1q1 - q2q2 + q3q3;   // 错：等于正确值的 2 倍
+  halfvz = q0q0 - 0.5f + q3q3;          // 对
+
+  证据（我把采集的 gyro/acc 原样喂进 Python 复刻算法，与固件输出逐帧吻合到
+  0.00000 rad，所以算法行为完全可解释）：
+
+  ┌──────────────────┬─────────┬──────────┐
+  │                  │  roll   │  pitch   │
+  ├──────────────────┼─────────┼──────────┤
+  │ 加速度计反算真值 │ −1.797° │ +16.079° │
+  ├──────────────────┼─────────┼──────────┤
+  │ 修复前固件收敛值 │ −3.161° │ +30.129° │
+  ├──────────────────┼─────────┼──────────┤
+  │ 修复后（模拟）   │ −1.790° │ +16.071° │
+  └──────────────────┴─────────┴──────────┘
+
+  云台把 16° 的安装倾角报成 30°，roll/pitch 双双错 1.88 倍——闭环里这是毁灭性的。
+
+  2. 陀螺零偏：已标定并补偿
+
+  静止 55 s 实测：gx +0.140 / gy +0.107 / gz +0.115 °/s，55 s 内各窗口漂移 <
+  0.002 °/s，可以当常数用。
+
+  yaw 轴上的等效零偏 = bias·转动轴 = 0.068 °/s = 4.1 °/min，与静止段 yaw
+  斜率实测 0.00118 rad/s 完全对上，交叉验证成立。
+
+  BMI088_Config_s 里已有 gyro_offset
+  字段但没暴露，我把它接到了配置项上（drv/drv_bmi088.h:84），gimbal app
+  里传入标定值。模拟验证：yaw 漂移 0.0676 → 0.0024 °/s，降 28 倍。
+
+  3. 温度恒为 0 —— 而且加热器一直在满功率工作
+
+  BMI088_CheckPendingIT 里 TEMP 排在 ACC/GYRO 之后，但这个函数只在 EXTI
+  里调用，而调用前必定刚置上 ACC 或 GYRO 位 →
+  每轮先清ACC/GYRO并启动传输（transfer_busy=1 退出 while），TEMP 
+  永远轮不到。已把 TEMP 提到最前。
+
+  这不是小事：DJI_C 的加热逻辑是 temperature < 50−0.1 → 满占空比，温度恒 0
+  意味着 heater 从开机起一直 100% 占空比加热。
+
+  4. 澄清：yaw 那 4.4% 不是标度误差，别去"修"
+
+  你说 IMU 是倾斜安装的——数据完全证实：
+
+  - 静态重力方向 → IMU 实际倾斜 roll −1.80° / pitch +16.08°
+  - 转动段陀螺向量 PCA 主轴与重力方向夹角 0.81° → 确实是绕竖直轴转
+  - 固件 euler.yaw 对真实转角的拟合斜率 1.00072，R²=1.0000
+
+  euler.yaw 与 ∫gz·dt 差的 4% 就是 1/cos(16°) 
+  的欧拉角运动学耦合，传感器本身没有标度误差。我在 VOFA 注释里写明了这点。
+
+  5. 上电姿态播种（新增）
+
+  原来从单位四元数收敛要 6~10 s，且校正的 z 分量会把 yaw 顺带推偏约
+  3°。现在第一帧就用加速度计反算的 roll/pitch 播种：
+
+  t=0.14s  roll -1.704  pitch +16.130   (真值 -1.797 / +16.079)
+
+  6. 参数结论：kp=1.0 / ki=0，维持不变
+
+  ┌─────┬──────────┬────────────────┬────────────────────┐
+  │ kp  │ 时间常数 │ 加速度噪声贡献 │ 2·bias/kp 稳态倾斜 │
+  ├─────┼──────────┼────────────────┼────────────────────┤
+  │ 1.0 │ 2.0 s    │ 0.0032°        │ 0.281°             │
+  ├─────┼──────────┼────────────────┼────────────────────┤
+  │ 2.0 │ 1.0 s    │ 0.0045°        │ 0.140°             │
+  └─────┴──────────┴────────────────┴────────────────────┘
+
+  加速度计角度噪声只有 0.14° rms（模长 9.798，误差 −0.088%，无需标定），所以 kp
+  提到 2~5 噪声上也吃得消。但你说实际运动会更剧烈——大机动时加速度计不可信，宁可
+  信陀螺仪；而零偏已经补偿，低 kp 不再有代价。保持 1.0。
+
+  ki 保持 0：六轴 yaw 不可观测，ki 的 z 分量没有可信校正源，会积出假零偏。
+
+  需要你确认的两件事
+
+  1. 标定值是在加热器一直满功率的状态下测的。修好温度后加热器会稳定在 50 °C
+     附近，温度会变 → 刷入后建议重采一次静态数据复核零偏。
+  2. half_rudder_chassis 是 DM_MC02（STM32H723）另一块板，零偏不通用，我没有动它
+     。需要的话跑一次同样的静态采集，我把值填进去。
+
+✻ Cooked for 7m 21s · done 21:03
+
+※ recap: 分析 VOFA 数据并调 IMU 参数：已修好 Mahony 倾角放大一倍的 bug、补偿了陀螺零偏、修了温度读数，代码编译通过。下一步请刷入固件后重采一次静态数据，复核零偏标定值。
+
+❯ ignore/static_heater.csv 继续分析                                             
+
+  Thought for 9s, listed 1 directory (ctrl+o to expand)
+
+● Bash(python3 -c "
+      import numpy as np…)
+  ⎿  时长 55.0 s  27517 样本  500.0 Hz   dt_ms mean 1.9999 std 0.2271
+     温度 CH13: min 0.000 max 53.375 唯一值 30 个
+       前 20 个唯一值: [ 0.    39.625 40.125 41.    42.125 43.375 44.75  46
+     … +17 lines (ctrl+o to expand)
+
+  Thought for 8s (ctrl+o to expand)
+
+● 温度通道现在有数了。让我做温度-零偏相关性分析：
+
+● Bash(python3 -c "
+      import numpy as np…)
+  ⎿  === 整段零偏（角速度原始值）===
+       gx +0.00089  gy -0.00011  gz +0.00169 rad/s   (上次标定 +0.00245 +0.
+     00187 +0.00200)
+     … +21 lines (ctrl+o to expand)
+
+  Thought for 11s (ctrl+o to expand)
+● Bash(cat > /tmp/an7.py <<'EOF'
+      import numpy as np…)
+  ⎿  === 升温段(0~20s, 温度单调 39.6→53.4°C) 单独回归 ===
+       gx: -0.000106 rad/s/°C (-0.0061 deg/s/°C)  r=-0.148   n=9859
+       gy: -0.000103 rad/s/°C (-0.0059 deg/s/°C)  r=-0.113   n=9859
+     … +19 lines (ctrl+o to expand)
+
+  Thought for 17s (ctrl+o to expand)
+
+● Bash(cat > /tmp/an8.py <<'EOF'
+      import numpy as np…)
+  ⎿  当前固件补偿 (+245 +187 +200) urad  →  末段 yaw 漂移 +0.00019 rad/s =
+     +0.0106 deg/s = +0.64 deg/min
+     本段稳态值   (+70 -30 +168) urad  →  末段 yaw 漂移 -0.00003 rad/s = -0
+     … +4 lines (ctrl+o to expand)
+
+  Thought for 7s (ctrl+o to expand)
+
+● Bash(cat > /tmp/an9.py <<'EOF'
+      import numpy as np…)
+  ⎿  === 1) 同一温度区间、不同时间：零偏是否只由温度决定？===
+      49-51°C:
+         升温段(t<21s)     n= 1281  gx +0.0470  gy -0.0112  gz +0.0950  (de
+     … +23 lines (ctrl+o to expand)
+
+  Thought for 7s (ctrl+o to expand)
+
+● Bash(cat > /tmp/an10.py <<'EOF'
+      import numpy as np…)
+  ⎿  升温段 0-27.5s  T=46.59°C  n=13681
+     尾段  >27.5s    T=51.23°C  n=13836
+     前半段标定  gx +0.00103 gy +0.00006 gz +0.00173 rad/s
+     … +10 lines (ctrl+o to expand)
+
+  Thought for 10s (ctrl+o to expand)
+
+● Bash(python3 -c "
+      import numpy as np…)
+  ⎿  温度   n     |acc|     ax       ay       az     acc_roll acc_pitch
+     39-41  1282  9.7772  -2.6039 -0.3167 +9.4187  -1.9261 +15.4460
+     41-43  1282  9.7617  -2.6053 -0.3115 +9.4024  -1.8977 +15.4792
+     … +12 lines (ctrl+o to expand)
+
+  Thought for 13s (ctrl+o to expand)
+
+● Bash(python3 -c "
+      exec(open('/tmp/an8.py').read().split('R2D=180/np.pi')[0].replace('d=np.ge
+      nfromtxt','_=np.genfromtxt'))…)
+  ⎿  Traceback (most recent call last):
+       File "<string>", line 2, in <module>
+       File "<string>", line 3, in <module>
+     NameError: name 'd' is not defined. Did you mean: 'id'?
+
+● Bash(cat > /tmp/an11.py <<'EOF'
+      import numpy as np…)
+  ⎿  当前固件 245/187/200 urad    末段 yaw +0.636 °/min | roll 残差 -0.2001
+       pitch 残差 -0.2480 deg
+     整段均值  89/-11/169         末段 yaw +0.041 °/min | roll 残差 -0.0136
+     … +5 lines (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ 继续                                                                          
+
+  Thought for 3s, read 1 file (ctrl+o to expand)
+
+● Update(app/half_rudder_gimbal/app_gimbal/app_gimbal.c)
+  ⎿  Added 16 lines, removed 8 lines
+      36   * 避免一次大 dt 让四元数一步跳变 */
+      37  #define IMU_DT_MAX_S (0.01f)
+      38  
+      39 -/* 陀螺仪零偏 (rad/s)，静止 55s 实测（本机 IMU 倾斜安装：roll -
+         -1.80° pitch +16.08°）：                                        
+      40 - *   gx +0.00245  gy +0.00187  gz +0.00200   →  +0.140 / +0.107
+         - / +0.115 °/s                                                  
+      41 - * 55s 内各窗口漂移 < 0.002°/s，稳定到可以当常数用。           
+      39 +/* 陀螺仪零偏 (rad/s)，静止 55s 实测（本机 IMU 倾斜安装：roll -
+         +1.78° pitch +15.39°）：                                        
+      40 + *   gx +0.00089  gy -0.00011  gz +0.00169   →  +0.051 / -0.006
+         + / +0.097 °/s                                                  
+      41 + *                                                             
+      42   * 为什么必须补偿：六轴 Mahony 的 yaw 完全来自陀螺积分，加速度
+          计对它没有任何
+      43 - * 校正能力，不补偿就是纯漂移。实测 yaw 轴上的等效零偏         
+      44 - *   bias·(转动轴单位向量) = 0.00118 rad/s = 0.068 °/s = 4.1 °/
+         -min，                                                          
+      45 - * 与静止段 yaw 斜率实测值完全一致。                           
+      46 - * 换 IMU / 拆装后必须重新标定：板载加热（TIM_HEATER）与温升都 
+         -会改变零偏。 */                                                
+      47 -static const float s_gyro_offset[3] = {0.00245f, 0.00187f, 0.00
+         -200f};                                                         
+      43 + * 校正能力（交叉积误差里没有 yaw 分量），不补偿就是纯漂移。补 
+         +偿前后实测：                                                   
+      44 + *   yaw 漂移  +0.64 °/min → +0.04 °/min；roll/pitch 静差 -0.20
+         +/-0.25° → <0.02°                                               
+      45 + *   （静差来自 2*bias/kp，kp=1 时 bias 直接按 2 倍体现在倾角上
+         +）                                                             
+      46 + * 留出验证：用前半段（升温中）标定、后半段（工作点）评估，仍有
+         + +0.05 °/min，                                                 
+      47 + * 说明这组值不是过拟合到某一段热状态。                        
+      48 + *                                                             
+      49 + * ⚠ 这组值是在加热器工作、温度稳定在 ~50°C 时测的，加热器目标 
+         +温度也是 50°C。                                                
+      50 + *   gz（决定 yaw 的那根轴，占 yaw 轴投影的 96%）实测温度系数 ≈
+         + 0（r=0.000），                                                
+      51 + *   所以定值补偿很稳；gx/gy 有约 -0.006 °/s/°C 的温度系数，但 
+         +gy 对 yaw 的                                                   
+      52 + *   耦合只有 sin(roll)≈3%，gx 只影响 roll 静差（±2°C 波动 → 0.
+         +02°），可忽略，                                                
+      53 + *   故不做温度补偿。                                          
+      54 + * 换 IMU / 拆装 / 改动加热策略后必须重新标定。 */             
+      55 +static const float s_gyro_offset[3] = {0.00089f, -0.00011f, 0.0
+         +0169f};                                                        
+      56  
+      57  /* VOFA 调参用派生量（只在 AppGimbalRun 里更新，仅供观察，不参
+          与控制） */
+      58  static float yaw_unwrapped = 0.0f; // yaw 解缠值 (rad)：转大角
+          度时不在 ±π 处跳变
+
+● Bash(cmake --build --preset Debug 2>&1 | tail -6 && cmake --build --preset
+      Release 2>&1 | tail -4)
+  ⎿            CCMRAM:           0 B        64 KB      0.00%
+                FLASH:      129796 B         1 MB     12.38%
+        text       data     bss     dec     hex filename
+     … +11 lines (ctrl+o to expand)
+
+  Thought for 8s (ctrl+o to expand)
+
+● 分析完成，并按新数据更新了零偏标定（Debug/Release 均编译通过）。
+
+  这份数据是刷入修复后采的——三处改动都验证了
+
+  ┌────────────────┬────────────────────────────────────────────────────────┐
+  │     验证项     │                          结果                          │
+  ├────────────────┼────────────────────────────────────────────────────────┤
+  │ 温度通道       │ 0 → 39.6 → 峰值 53.4 → 稳定 49.3~53.4°C，30 个不同值   │
+  │ (CH13)         │ ✅                                                     │
+  ├────────────────┼────────────────────────────────────────────────────────┤
+  │ 加热器闭环     │ 目标 50°C，实际稳定在 ~51.3°C ✅（此前恒 0             │
+  │                │ 导致一直满占空比）                                     │
+  ├────────────────┼────────────────────────────────────────────────────────┤
+  │ 上电播种       │ 第一帧就是 roll −1.99° / pitch +15.51°，不再有 6~10s   │
+  │                │ 收敛 ✅                                                │
+  └────────────────┴────────────────────────────────────────────────────────┘
+
+  温度是 bang-bang 振荡的：回滞只有 0.1°C，而温度读取间隔 1.28s，所以过冲
+  ±2°C。这不影响使用（见下文第 3 点）。
+
+  1. 零偏标定变了——旧值是在"加热器卡死"状态下测的
+
+  ┌──────────────────────────────────┬──────┬──────┬─────────────┐
+  │                                  │  gx  │  gy  │     gz      │
+  ├──────────────────────────────────┼──────┼──────┼─────────────┤
+  │ 旧标定（加热器 100% 占空比时测） │ +245 │ +187 │ +200 µrad/s │
+  ├──────────────────────────────────┼──────┼──────┼─────────────┤
+  │ 本次实测（加热器稳在 50°C）      │ +89  │ −11  │ +169 µrad/s │
+  └──────────────────────────────────┴──────┴──────┴─────────────┘
+
+  gz 只差 31 µrad/s，gx/gy 差得多。用采集数据重放验证（模拟与固件吻合到 4e-4
+  rad）：
+
+  ┌────────────────┬─────────────┬───────────┬────────────┐
+  │     补偿值     │  yaw 漂移   │ roll 静差 │ pitch 静差 │
+  ├────────────────┼─────────────┼───────────┼────────────┤
+  │ 旧 245/187/200 │ +0.64 °/min │ −0.20°    │ −0.25°     │
+  ├────────────────┼─────────────┼───────────┼────────────┤
+  │ 新 89/−11/169  │ +0.04 °/min │ −0.014°   │ −0.020°    │
+  └────────────────┴─────────────┴───────────┴────────────┘
+
+  已写入 app_gimbal.c:47。倾角静差就是 2·bias/kp（kp=1 时零偏直接按 2
+  倍体现成角度），所以 gx 差 156 µrad/s 就对应 0.2° 的 roll 静差。
+
+  2. 留出验证：不是过拟合
+
+  用前半段（T=46.6°C）标定，去评估后半段（T=51.2°C）：yaw 漂移 +0.05
+  °/min，roll/pitch 残差 −0.03/−0.04°。跨 4.6°C 热状态仍然成立。
+
+  3. gz 几乎不随温度变，这是关键的好消息
+
+  ┌─────┬────────────────┬──────────┐
+  │ 轴  │    温度系数    │ 相关系数 │
+  ├─────┼────────────────┼──────────┤
+  │ gx  │ −0.0062 °/s/°C │ r=−0.15  │
+  ├─────┼────────────────┼──────────┤
+  │ gy  │ −0.0058 °/s/°C │ r=−0.11  │
+  ├─────┼────────────────┼──────────┤
+  │ gz  │ −0.0000 °/s/°C │ r=0.000  │
+  └─────┴────────────────┴──────────┘
+
+  决定 yaw 的就是 gz，占 yaw 轴投影的 96%。它温度系数为零 →
+  定值补偿足够，不需要温度补偿表。
+
+  gx/gy 那点相关性还有一半是伪相关：同一温度区间（49-51°C）内，升温段 gx
+  +0.0470、尾段 +0.0525 °/s，差 0.0055 °/s —
+  说明存在热滞后，按温度查表并不准。好在 gy 对 yaw 的耦合只有 sin(roll)≈3%，gx
+  只影响 roll 静差（±2°C 波动 → 0.02°），都可忽略。
+
+  4. 加速度计本身也随温度漂
+
+  14°C 内 ax 变 0.014、ay 变 0.032 m/s²，导致加速度计反算的 roll 从 −1.93° 漂到 
+  −1.73°（0.19°），pitch 只漂 0.09°。这是姿态的绝对基准在动，量级
+  0.2°，暂时可接受；真要压下去得给加速度计也做温度标定。
+
+  5. 残余 yaw 漂移已经到噪声底了
+
+  补偿后 +0.04 °/min 折算到 yaw 轴上只有 12 µrad/s 残余零偏，而由单样本噪声（gz
+  标准差 3970 µrad/s，27500 样本）决定的标定精度极限是 ~24 
+  µrad/s。也就是说这组值已经没法靠"再测一次取均值"改善了，继续降只能靠：
+
+  - 整机静止时在线估零偏（六轴 yaw 不可观测，只能静止时做）
+  - 或者接受现状 —— 0.04 °/min 意味着 5 分钟才漂 0.2°
+
+  6. 一个需要你确认的现象
+
+  两次采集之间，安装角从 pitch 16.08° 变成 15.39°，|acc| 从 9.7981 变成
+  9.7748（−0.24%）。gyro
+  零偏是芯片属性、与安装无关，所以零偏变化确实是温度导致的；但安装角差 0.57°
+  只可能是 IMU
+  被动过、或底盘放置姿态不同。如果是前者，现在的标定仍然有效（已用新数据重标）；
+  如果是后者（比如底盘这次没放平），那加速度计反算的基准就带了偏差。
+
+  另外 half_rudder_chassis（DM_MC02，另一块板）我没动，它的零偏不通用，需要的话
+  单独跑一次同样的静止采集。
+
+✻ Cooked for 25s · done 21:15
+
+※ recap: Goal was tuning the gimbal IMU: I fixed a Mahony angle bug, calibrated the gyro bias from your new static_heater data, and rebuilt both configs clean. Next, confirm whether the IMU was remounted, since the tilt angle shifted 0.57°.

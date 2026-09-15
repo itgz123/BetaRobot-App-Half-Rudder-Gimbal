@@ -41,6 +41,7 @@
 #define DRV_COMM_USED               //
 #define LIB_FORMAT_USED             // 快速格式化（零除法整数转换，bsp_log 依赖）
 #define BSP_LOG_USED                // 日志输出
+#define BMI088_HEAT_USED
 //
 #define GENERATE_DISASSEMBLY // 生成反汇编文件 .lst
 #define GENERATE_READELF     // 生成 readelf 输出文件
@@ -70,6 +71,5 @@
 #define LIB_MATH_TRIG_LUT_PREC 3  // LUT 精度：0=低 1=中 2=高 3=满精度(误差<ε=2^-23)
 
 /* 关闭 */
-// #define BMI088_HEAT_USED
 
 #endif // __APP_CFG_H

@@ -9,8 +9,8 @@
 #include "drv_vofa.h"
 #include "drv_axis_mit_lite.h"
 #include "drv_terminal_lite.h"
-// #include "drv_bmi088.h"
-// #include "lib_mahony.h"
+#include "drv_bmi088.h"
+#include "lib_mahony.h"
 //
 #include "bsp_assert.h"
 
@@ -21,15 +21,48 @@ RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
 static AxisMitLiteInstance pitchup_axis;
 static AxisMitLiteInstance yaw_axis;
 
-// // 姿态传感器相关变量
-// static BMI088_Data_t imu = {0};
-// static euler_t euler = {0};
-// static uint64_t last_imu_ts = 0; /* 上帧 IMU 时间戳 (us)，用于计算 dt */
-// static float dt;
-// static vector3_t gyro;
-// static vector3_t acc;
-// BMI088_INSTANCE_DEF(bmi088);
-// MAHONY_INSTANCE_DEF(mahony);
+// 姿态传感器相关变量
+/* 用多速率接口读原始数据：acc/gyro 各带自己的时间戳，不做插值对齐。
+ * dt 由陀螺仪自身相邻两帧时间戳差分得到，与下面参与积分的 gyro 样本严格同源；
+ * acc 只做低频姿态校正，最多滞后一个 acc 周期（400Hz → 2.5ms），对校正量无影响 */
+static BMI088_MultiRateData_t imu = {0};
+static euler_t euler = {0};
+static uint64_t last_gyro_ts = 0; /* 上帧陀螺仪时间戳 (us)，用于计算 dt */
+static float dt;
+static vector3_t gyro;
+static vector3_t acc;
+
+/* dt 上限(s)：任务被拖延（app.c 会打 DELAY 日志）时限制单步积分步长，
+ * 避免一次大 dt 让四元数一步跳变 */
+#define IMU_DT_MAX_S (0.01f)
+
+/* 陀螺仪零偏 (rad/s)，静止 55s 实测（本机 IMU 倾斜安装：roll -1.78° pitch +15.39°）：
+ *   gx +0.00089  gy -0.00011  gz +0.00169   →  +0.051 / -0.006 / +0.097 °/s
+ *
+ * 为什么必须补偿：六轴 Mahony 的 yaw 完全来自陀螺积分，加速度计对它没有任何
+ * 校正能力（交叉积误差里没有 yaw 分量），不补偿就是纯漂移。补偿前后实测：
+ *   yaw 漂移  +0.64 °/min → +0.04 °/min；roll/pitch 静差 -0.20/-0.25° → <0.02°
+ *   （静差来自 2*bias/kp，kp=1 时 bias 直接按 2 倍体现在倾角上）
+ * 留出验证：用前半段（升温中）标定、后半段（工作点）评估，仍有 +0.05 °/min，
+ * 说明这组值不是过拟合到某一段热状态。
+ *
+ * ⚠ 这组值是在加热器工作、温度稳定在 ~50°C 时测的，加热器目标温度也是 50°C。
+ *   gz（决定 yaw 的那根轴，占 yaw 轴投影的 96%）实测温度系数 ≈ 0（r=0.000），
+ *   所以定值补偿很稳；gx/gy 有约 -0.006 °/s/°C 的温度系数，但 gy 对 yaw 的
+ *   耦合只有 sin(roll)≈3%，gx 只影响 roll 静差（±2°C 波动 → 0.02°），可忽略，
+ *   故不做温度补偿。
+ * 换 IMU / 拆装 / 改动加热策略后必须重新标定。 */
+static const float s_gyro_offset[3] = {0.00089f, -0.00011f, 0.00169f};
+
+/* VOFA 调参用派生量（只在 AppGimbalRun 里更新，仅供观察，不参与控制） */
+static float yaw_unwrapped = 0.0f;  // yaw 解缠值 (rad)：转大角度时不在 ±π 处跳变
+static float acc_norm = 0.0f;       // 合加速度模长 (m/s^2)：静止应 ≈ 9.80665
+static float acc_roll_err = 0.0f;   // roll 校正残差 (rad)：euler.roll - 加速度反算 roll
+static float acc_pitch_err = 0.0f;  // pitch 校正残差 (rad)
+static float imu_temp = 0.0f;       // BMI088 温度 (℃)：陀螺仪零偏随温度漂移
+static uint8_t attitude_seeded = 0; // 上电姿态是否已用加速度计播种
+BMI088_INSTANCE_DEF(bmi088);
+MAHONY_INSTANCE_DEF(mahony);
 
 static cmd2gimbal_data_t gimbal_cmd2gimbal_data; // cmd2gimbal
 
@@ -261,38 +294,74 @@ void AppGimbalInit(void)
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&yaw_axis, &yaw_axis_cfg));
 
-    // // 注册 BMI088（只注册子模块，Config 时配置硬件）
-    // BSP_ASSERT_APP_CALL(BMI088Register(&bmi088));
-
-    // // 配置 BMI088（硬件枚举 + 传感器参数 + daemon）
-    // BMI088_Config_s bmi088_cfg = {
-    //     .spi_e = SPI_BMI088,
-    //     .cs_acc_e = GPIO_BMI088_CS_ACCEL,
-    //     .cs_gyro_e = GPIO_BMI088_CS_GYRO,
-    //     .int_acc_e = GPIO_BMI088_INT_ACCEL,
-    //     .int_gyro_e = GPIO_BMI088_INT_GYRO,
-    //     .heater_e = TIM_HEATER,
-    //     .daemon_reload = 20,
-    //     .daemon_fault = DAEMON_FAULT_NONE,
-    //     .acc_range = BMI088_ACC_RANGE_3G,
-    //     .acc_bwp = BMI088_ACC_BWP_NORMAL,
-    //     .acc_odr = BMI088_ACC_ODR_400,
-    //     .gyro_range = BMI088_GYRO_RANGE_2000,
-    //     .gyro_conf = BMI088_GYRO_CONF_2000_230,
-    //     .work_mode = BMI088_MODE_INT,
-    //     .spi_timeout_ms = 10, // SPI IT/DMA 传输超时(ms)
-    // };
-    // BSP_ASSERT_APP_CALL(BMI088Config(&bmi088, &bmi088_cfg));
-
-    // // 初始化 Mahony 滤波器
-    // Mahony_Init_Config_s mahony_cfg = {
-    //     .kp = 0.5f,
-    //     .ki = 0.0f,
-    // };
-    // MahonyInit(&mahony, &mahony_cfg);
+    // 注册 BMI088（只注册子模块，Config 时配置硬件）
+    BSP_ASSERT_APP_CALL(BMI088Register(&bmi088));
+    // 配置 BMI088（硬件枚举 + 传感器参数 + daemon）
+    BMI088_Config_s bmi088_cfg = {
+        .spi_e = SPI_BMI088,
+        .cs_acc_e = GPIO_BMI088_CS_ACCEL,
+        .cs_gyro_e = GPIO_BMI088_CS_GYRO,
+        .int_acc_e = GPIO_BMI088_INT_ACCEL,
+        .int_gyro_e = GPIO_BMI088_INT_GYRO,
+        .heater_e = TIM_HEATER,
+        .daemon_reload = 20,
+        .daemon_fault = DAEMON_FAULT_NONE,
+        .acc_range = BMI088_ACC_RANGE_3G,     // ±3g，云台不会有大加速度，取最小量程换分辨率
+        .acc_bwp = BMI088_ACC_BWP_NORMAL,     // 正常带宽（ODR>400Hz 才必须切 OSR 模式）
+        .acc_odr = BMI088_ACC_ODR_400,        // 400Hz：只喂 Mahony 的低频校正，够用
+        .gyro_range = BMI088_GYRO_RANGE_2000, // ±2000dps，留余量避免大机动削顶
+        /* ODR=1000Hz/BW=116Hz：任务周期 2ms(500Hz)，2000Hz 的采样用不上，
+         * 反而把 250Hz 以上的噪声折返进来；1000Hz 配 116Hz 带宽噪声更低 */
+        .gyro_conf = BMI088_GYRO_CONF_1000_116,
+        .work_mode = BMI088_MODE_INT,
+        .spi_timeout_ms = 10,         // SPI IT/DMA 传输超时(ms)
+        .gyro_offset = s_gyro_offset, // 静止标定零偏，见 s_gyro_offset 定义
+    };
+    BSP_ASSERT_APP_CALL(BMI088Config(&bmi088, &bmi088_cfg));
+    // 初始化 Mahony 滤波器
+    /* kp：加速度计校正增益。实现里 gyro += kp * halfex，halfv 只有旋转矩阵的一半，
+     *     故等效增益为 kp/2（kp=1.0 ≈ Madgwick 默认 Kp=0.5），误差时间常数约 2s。
+     *     实测加速度计角度噪声仅 0.14°(rms)，kp 提到 2~5 噪声代价仍可忽略，
+     *     但大机动时加速度计不可信，宁可信陀螺仪，故维持 1.0。
+     * ki：陀螺仪零偏估计。置 0 —— 六轴 yaw 不可观测，ki 的 z 分量没有可信的
+     *     校正源，反而会把加速度计噪声积成假零偏。改用实测零偏硬补偿，
+     *     确定性更好（见 s_gyro_offset）。 */
+    Mahony_Init_Config_s mahony_cfg = {
+        .kp = 1.0f,
+        .ki = 0.0f,
+    };
+    MahonyInit(&mahony, &mahony_cfg);
 
     // 串口调参终端（轴实例就绪后注册命令表）
     TerminalLiteInit(s_gimbal_tl_cmds, (uint8_t)GIMBAL_TL_CMD_NUM);
+}
+
+/**
+ * @brief 把 wrap 到 (-π, π] 的 yaw 展开成连续值
+ * @param yaw 当前 yaw (rad)
+ * @return 解缠后的 yaw (rad)，从首次调用的位置起累计，转多圈也连续
+ * @note 相邻两帧取最短路径增量再累加，跨 ±π 时不跳变。
+ *       调参采集 yaw 旋转数据时用它，否则曲线会在 ±π 处被折断
+ */
+static float UnwrapYaw(float yaw)
+{
+    static float yaw_prev = 0.0f;
+    static float yaw_acc = 0.0f;
+    static uint8_t init = 0;
+
+    if (!init)
+    {
+        yaw_prev = yaw;
+        yaw_acc = yaw;
+        init = 1;
+    }
+    else
+    {
+        yaw_acc += Lib_Math_WrapAngleNegPIToPI(yaw - yaw_prev);
+        yaw_prev = yaw;
+    }
+
+    return yaw_acc;
 }
 
 ITCM_RAM void AppGimbalRun(void)
@@ -318,28 +387,62 @@ ITCM_RAM void AppGimbalRun(void)
         .torque = yaw_mdata.torque,
     };
 
-    // // 读取 BMI088 原始数据
-    // imu = BMI088ReadInt(&bmi088);
+    // 读取 BMI088 原始数据（陀螺仪/加速度计各带独立时间戳，无插值）
+    imu = BMI088ReadLatest(&bmi088);
 
-    // // 计算 dt：用 BMI088 插值时间戳之差 (us → s)
-    // dt = 0.0f;
-    // if (imu.time_stamp > 0 && last_imu_ts > 0)
-    // {
-    //     dt = (float)(imu.time_stamp - last_imu_ts) * 1e-6f;
-    // }
-    // last_imu_ts = imu.time_stamp;
+    // 计算 dt：陀螺仪相邻两帧时间戳之差 (us → s)
+    dt = 0.0f;
+    if (imu.time_stamp_g > 0 && last_gyro_ts > 0)
+    {
+        dt = (float)(imu.time_stamp_g - last_gyro_ts) * 1e-6f;
+        if (dt > IMU_DT_MAX_S)
+            dt = IMU_DT_MAX_S; // 任务被拖长时的保护
+    }
+    if (imu.time_stamp_g > 0)
+        last_gyro_ts = imu.time_stamp_g; // 数据未就绪(0)时不更新，恢复后本帧 dt=0 自然跳过
 
-    // // Mahony 姿态解算（dt 由 APP 层根据 BMI088 插值时间戳传入）
-    // gyro.x = imu.gyro[0];
-    // gyro.y = imu.gyro[1];
-    // gyro.z = imu.gyro[2];
-    // acc.x = imu.acc[0];
-    // acc.y = imu.acc[1];
-    // acc.z = imu.acc[2];
-    // MahonyUpdate(&mahony, gyro, acc, dt);
+    // Mahony 姿态解算（dt 由 APP 层根据陀螺仪时间戳传入）
+    gyro.x = imu.gyro[0];
+    gyro.y = imu.gyro[1];
+    gyro.z = imu.gyro[2];
+    acc.x = imu.acc[0];
+    acc.y = imu.acc[1];
+    acc.z = imu.acc[2];
 
-    // // 从 Mahony 四元数解算 yaw 角
-    // euler = Lib_Math_QuatToEuler(mahony.quat);
+    /* 上电姿态播种：用第一帧可信的加速度计反算 roll/pitch 直接写进四元数。
+     * 不播种的话滤波器从单位四元数慢慢收敛（kp=1 → τ≈2s，实测要约 6~10s），
+     * 这段过程里 ① 姿态全是错的 ② 加速度计校正的 z 分量会把 yaw 顺带推偏约 3°。
+     * yaw 无法从加速度计观测，取 0 作为航向基准。 */
+    acc_norm = Lib_Math_Vec3Length(acc);
+    if (!attitude_seeded && imu.time_stamp_g > 0 && Lib_Math_Fabs(acc_norm - 9.80665f) < 2.0f)
+    {
+        attitude_seeded = 1;
+        euler_t init_e = {
+            .roll = Lib_Math_Atan2(acc.y, acc.z),
+            .pitch = Lib_Math_Atan2(-acc.x, Lib_Math_Sqrt(acc.y * acc.y + acc.z * acc.z)),
+            .yaw = 0.0f,
+        };
+        mahony.quat = Lib_Math_EulerToQuat(init_e);
+    }
+
+    MahonyUpdate(&mahony, gyro, acc, dt);
+
+    // 从 Mahony 四元数解算欧拉角 (rad)
+    euler = Lib_Math_QuatToEuler(mahony.quat);
+
+    /* ---- VOFA 调参派生量 ---- */
+    yaw_unwrapped = UnwrapYaw(euler.yaw);
+    /* 由加速度计直接反算的 roll/pitch，与 lib_mahony 的 halfv 取同一约定
+     * （静止时 accel 指向 +Z、模长 1g）。静止且 acc 可信时，euler 与它之差 ≈ 0；
+     * 若残差 ≈ 2×euler，说明 acc 的符号约定与库不一致（校正会往反方向推）。
+     * 残差也约等于 kp*error/2 的稳态余量，是调 kp 最直接的观测量 */
+    {
+        float acc_roll = Lib_Math_Atan2(acc.y, acc.z);
+        float acc_pitch = Lib_Math_Atan2(-acc.x, Lib_Math_Sqrt(acc.y * acc.y + acc.z * acc.z));
+        acc_roll_err = Lib_Math_WrapAngleNegPIToPI(euler.roll - acc_roll);
+        acc_pitch_err = euler.pitch - acc_pitch;
+    }
+    imu_temp = bmi088.temperature;
 
     // setref
     // 清零
@@ -401,6 +504,46 @@ ITCM_RAM void AppGimbalRun(void)
 
     // 其他
     // vofa发送
+    /* VOFA 调试通道（CH0=时间戳由驱动自动填充，数据在 VofaSend 时发出）：
+     *   CH1-3 : euler roll/pitch/yaw (rad)，yaw 为 wrap 到 (-π,π] 的原始值
+     *   CH4-6 : 陀螺仪 gyro x/y/z (rad/s)
+     *   CH7-9 : 加速度计 acc x/y/z (m/s^2)
+     *   CH10  : dt (ms)，可与 CH0 时间戳对照检查采样是否连续
+     *   CH11  : 合加速度 |acc| (m/s^2)，静止应 ≈ 9.80665；
+     *           偏离 9.80665±0.3 时 lib_mahony 会整帧跳过加速度计校正
+     *   CH12  : yaw 解缠值 (rad)，转多圈连续，采集 yaw 旋转数据时用它而不是 CH3
+     *   CH13  : BMI088 温度 (℃)，陀螺仪零偏随温度漂移，可用来判断静态零偏是否有效
+     *   CH14  : roll 校正残差 (rad) = euler.roll - 加速度反算 roll，
+     *           静止收敛后应 ≈ 0（只剩 2*bias/kp 的稳态余量，零偏补偿后应 < 0.01°）；
+     *           若残差 ≈ 2×euler.roll 说明 halfv 或 acc 符号约定错了
+     *   CH15  : pitch 校正残差 (rad)，同上
+     *
+     * 调参用法：
+     *   静态采集 —— 用 CH4-6 求陀螺仪零偏(均值)与噪声(标准差)，CH11 确认 acc 可信，
+     *               CH1-2/CH14-15 看 roll/pitch 是否收敛且无静差，CH3/CH12 看 yaw 漂移速率
+     *   转动 yaw —— 底盘固定只转 yaw，用 CH12 与 cumsum(CH6*CH10/1000) 对比。
+     *               注意：IMU 倾斜安装时两者本来就不相等，比值 = 1/cos(pitch)
+     *               （本机 pitch≈16° → 1.04），这是欧拉角运动学耦合、不是标度误差；
+     *               要核标度就把 CH12 与"陀螺在转动轴上的投影积分"比。
+     *               同时 CH1-2/CH14-15 应基本不动
+     *
+     * 注意：drv_axis_mit_lite 的 vofa_enable 同样占用 CH1~CH12，
+     *       若后续要开某个轴的调试输出，需先让出/错开这些通道 */
+    VofaSetChannel(1, euler.roll);
+    VofaSetChannel(2, euler.pitch);
+    VofaSetChannel(3, euler.yaw);
+    VofaSetChannel(4, gyro.x);
+    VofaSetChannel(5, gyro.y);
+    VofaSetChannel(6, gyro.z);
+    VofaSetChannel(7, acc.x);
+    VofaSetChannel(8, acc.y);
+    VofaSetChannel(9, acc.z);
+    VofaSetChannel(10, dt * 1000.0f);
+    VofaSetChannel(11, acc_norm);
+    VofaSetChannel(12, yaw_unwrapped);
+    VofaSetChannel(13, imu_temp);
+    VofaSetChannel(14, acc_roll_err);
+    VofaSetChannel(15, acc_pitch_err);
     VofaSend();
 
     // 回传云台反馈给 cmd（规划器需要当前位置/速度；pitch_down 供视觉回传下pitch位姿角）
