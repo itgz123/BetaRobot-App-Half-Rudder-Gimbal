@@ -100,22 +100,11 @@ static void chassis_send_control(void)
 
     if ((sbus_inst.sbus_data.ch[4] > sbus_half) && (sbus_inst.daemon->is_online == 1))
     {
-        if (sbus_inst.sbus_data.ch[6] < -sbus_half)
-        {
-            gimbal2chassis_data.mode = g2c_normal;
-        }
-        else if (sbus_inst.sbus_data.ch[6] > sbus_half)
-        {
-            gimbal2chassis_data.mode = g2c_hole;
-        }
-        else
-        {
-            gimbal2chassis_data.mode = g2c_gyro;
-        }
+        gimbal2chassis_data.enabled = 1;
     }
     else
     {
-        gimbal2chassis_data.mode = g2c_stop;
+        gimbal2chassis_data.enabled = 0;
     }
 
     gimbal2chassis_data.vx = (Lib_Math_Fabs(vx_ch) < DEADZONE) ? 0.0f : vx_ch;
