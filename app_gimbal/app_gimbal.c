@@ -381,11 +381,6 @@ ITCM_RAM void AppGimbalRun(void)
         .speed = pitchup_mdata.speed,
         .torque = pitchup_mdata.torque,
     };
-    AxisLiteState_s yaw_state = {
-        .position = (float)yaw_mdata.position,
-        .speed = yaw_mdata.speed,
-        .torque = yaw_mdata.torque,
-    };
 
     // 读取 BMI088 原始数据（陀螺仪/加速度计各带独立时间戳，无插值）
     imu = BMI088ReadLatest(&bmi088);
@@ -430,6 +425,27 @@ ITCM_RAM void AppGimbalRun(void)
     // 从 Mahony 四元数解算欧拉角 (rad)
     euler = Lib_Math_QuatToEuler(mahony.quat);
 
+    /* ---- yaw 轴反馈：取自 IMU（世界系），不用电机编码器 ----
+     * IMU 刚性固定在云台底座（yaw 轴输出、两个 pitch 关节的上游）：
+     *   ① 两个 pitch 轴怎么转都带不动 IMU，只有 yaw 轴转动会改变它的姿态；
+     *   ② 因此它报告的 roll/pitch 就是恒定的安装倾角（-1.78° / +15.39°），
+     *      euler.yaw 就是 yaw 轴的世界系航向，与视觉下发的世界系 yaw 同一坐标系。
+     * 位置直接用 euler.yaw。
+     * 速度把机体系陀螺仪投影到世界 Z 轴：世界 Z 轴在 IMU 机体系下的分量是 R 的第三行
+     *   [-sinθ, cosθ·sinφ, cosθ·cosφ]   (θ=pitch, φ=roll)，该向量为单位向量，
+     * 故 ψ̇ = 上式 · gyro 精确成立。不能直接取 gyro.z：安装倾角 15.39° 使
+     * cosθ·cosφ≈0.963，gyro.z 只有真实航向角速度的 96%，另外还有 -sinθ·ψ̇ 落在 gyro.x 上。
+     * 为什么不用编码器：编码器给的是"相对底盘"的关节角，底盘自转/被推动/回差时
+     * 都不等于云台的真实指向；要控世界系航向就得拿世界系的量来控。 */
+    float yaw_rate_world = -Lib_Math_Sin(euler.pitch) * gyro.x +
+                           Lib_Math_Cos(euler.pitch) * Lib_Math_Sin(euler.roll) * gyro.y +
+                           Lib_Math_Cos(euler.pitch) * Lib_Math_Cos(euler.roll) * gyro.z;
+    AxisLiteState_s yaw_state = {
+        .position = euler.yaw,
+        .speed = yaw_rate_world,
+        .torque = yaw_mdata.torque,
+    };
+
     /* ---- VOFA 调参派生量 ---- */
     yaw_unwrapped = UnwrapYaw(euler.yaw);
     /* 由加速度计直接反算的 roll/pitch，与 lib_mahony 的 halfv 取同一约定
@@ -445,12 +461,18 @@ ITCM_RAM void AppGimbalRun(void)
     imu_temp = bmi088.temperature;
 
     // setref
+    /* 状态机：stop = 失能（setref 保持 0）；normal/gyro 两档云台行为一致，给定都由 cmd
+     * 算好，差异只体现在底盘 w 上、且已由 cmd 侧按模式算完，故这里统一判 != stop。
+     * hole（过洞）：pitch 上下两个电机输出恒为 0（电机保持使能、仍发零力矩控制帧，
+     * 云台靠机构自重/收拢下垂），只有 yaw 继续控世界系航向。 */
+    robot_mode gimbal_mode = gimbal_cmd2gimbal_data.mode;
+    uint8_t pitch_off = (robot_mode_hole == gimbal_mode); // 过洞模式关闭 pitch
     // 清零
     pitchup_motor_setref = 0;
     pitchdown_motor_setref = 0;
     yaw_motor_setref = 0;
     // setref-pitchup
-    if (robot_mode_normal == gimbal_cmd2gimbal_data.mode)
+    if (robot_mode_stop != gimbal_mode && !pitch_off)
     {
         // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
         AxisMitLiteRef_s pitchup_ref = {
@@ -461,7 +483,7 @@ ITCM_RAM void AppGimbalRun(void)
         pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_state, &pitchup_ref);
     }
     // setref-pitchdown
-    if (robot_mode_normal == gimbal_cmd2gimbal_data.mode)
+    if (robot_mode_stop != gimbal_mode && !pitch_off)
     {
         // 固定值+重力前馈+速度误差项+pitchup力矩单向叠加
         float diejia_pitchup_motor_setref = 0; // 要叠加在pitchdown的力矩
@@ -480,7 +502,7 @@ ITCM_RAM void AppGimbalRun(void)
                                  diejia_pitchup_motor_setref;                                // pitchup单向
     }
     // setref-yaw
-    if (robot_mode_normal == gimbal_cmd2gimbal_data.mode)
+    if (robot_mode_stop != gimbal_mode)
     {
         // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
         AxisMitLiteRef_s yaw_ref = {
@@ -529,30 +551,39 @@ ITCM_RAM void AppGimbalRun(void)
      *
      * 注意：drv_axis_mit_lite 的 vofa_enable 同样占用 CH1~CH12，
      *       若后续要开某个轴的调试输出，需先让出/错开这些通道 */
-    VofaSetChannel(1, euler.roll);
-    VofaSetChannel(2, euler.pitch);
-    VofaSetChannel(3, euler.yaw);
-    VofaSetChannel(4, gyro.x);
-    VofaSetChannel(5, gyro.y);
-    VofaSetChannel(6, gyro.z);
-    VofaSetChannel(7, acc.x);
-    VofaSetChannel(8, acc.y);
-    VofaSetChannel(9, acc.z);
-    VofaSetChannel(10, dt * 1000.0f);
-    VofaSetChannel(11, acc_norm);
-    VofaSetChannel(12, yaw_unwrapped);
-    VofaSetChannel(13, imu_temp);
-    VofaSetChannel(14, acc_roll_err);
-    VofaSetChannel(15, acc_pitch_err);
-    VofaSend();
+    // VofaSetChannel(1, euler.roll);
+    // VofaSetChannel(2, euler.pitch);
+    // VofaSetChannel(3, euler.yaw);
+    // VofaSetChannel(4, gyro.x);
+    // VofaSetChannel(5, gyro.y);
+    // VofaSetChannel(6, gyro.z);
+    // VofaSetChannel(7, acc.x);
+    // VofaSetChannel(8, acc.y);
+    // VofaSetChannel(9, acc.z);
+    // VofaSetChannel(10, dt * 1000.0f);
+    // VofaSetChannel(11, acc_norm);
+    // VofaSetChannel(12, yaw_unwrapped);
+    // VofaSetChannel(13, imu_temp);
+    // VofaSetChannel(14, acc_roll_err);
+    // VofaSetChannel(15, acc_pitch_err);
+    // VofaSend();
 
-    // 回传云台反馈给 cmd（规划器需要当前位置/速度；pitch_down 供视觉回传下pitch位姿角）
+    /* 回传云台反馈给 cmd（规划器需要当前位置/速度；pitch_down 供视觉回传下pitch位姿角）。
+     * yaw 与 yaw_vel 回传的是 IMU 世界系量：必须与上面 yaw 轴控制用的反馈同源，
+     * 否则 cmd 的规划器会拿"相对底盘"的锚点去规划"世界系"的目标，每帧都差一个底盘航向。
+     * 同时视觉下发的 yaw 本就是世界系（见 app_cmd 的 gimbal_from_vision），回传也对齐。
+     * yaw_motor_* 另外回传编码器关节角（世界系量丢掉了"云台相对底盘"这一信息）：
+     *   ⚠ cmd 侧 chassis_w_from_mode 的底盘跟随 w = kp*wrap(-yaw_position) 要的是相对角，
+     *     现在拿的是世界系航向，normal/gyro 下会持续自转。这两个字段就是给它预留的，
+     *     cmd 侧切过来后，底盘跟随改用 yaw_motor_position/yaw_motor_vel 即可。 */
     gimbal2cmd_data_t gimbal2cmd_data = {
         .pitch_position = pitchup_mdata.position,
         .pitch_vel = pitchup_mdata.speed,
-        .yaw_position = yaw_mdata.position,
-        .yaw_vel = yaw_mdata.speed,
+        .yaw_position = euler.yaw,
+        .yaw_vel = yaw_rate_world,
         .pitch_down_position = pitchdown_mdata.position,
+        .yaw_motor_position = (float)yaw_mdata.position,
+        .yaw_motor_vel = yaw_mdata.speed,
     };
     xQueueOverwrite(gimbal2cmd_queue_handle, &gimbal2cmd_data);
 }

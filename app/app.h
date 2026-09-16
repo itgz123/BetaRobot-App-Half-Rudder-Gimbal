@@ -73,13 +73,22 @@ typedef struct
 {
     uint8_t temp_unused;
 } shoot2cmd_data_t;
+/* 云台→cmd 反馈（队列，不上线，无需字节对齐）。
+ * yaw 有两套反馈，坐标系不同，别混用：
+ *   yaw_position / yaw_vel —— IMU 世界系航向（rad, rad/s）。与视觉下发的世界系 yaw 同一坐标系，
+ *                             cmd 的 yaw 规划器拿它当锚点、并原样回传给视觉。
+ *   yaw_motor_*            —— yaw 电机编码器的关节角/角速度（rad, rad/s），即"云台相对底盘"。
+ *                             预留：底盘跟随 w = kp*wrap(-云台相对底盘角) 要用这一对，
+ *                             现在 cmd 侧还没切过来（见 app_cmd.c 的 chassis_w_from_mode）。 */
 typedef struct
 {
     float pitch_position;      // pitch轴当前反馈位置 (rad)
     float pitch_vel;           // pitch轴当前反馈速度 (rad/s)
-    float yaw_position;        // yaw轴当前反馈位置 (rad)
-    float yaw_vel;             // yaw轴当前反馈速度 (rad/s)
+    float yaw_position;        // yaw轴当前世界系航向 (rad)，来自 IMU
+    float yaw_vel;             // yaw轴当前世界系航向角速度 (rad/s)，来自 IMU+陀螺仪投影
     float pitch_down_position; // 下pitch轴当前反馈位置 (rad)
+    float yaw_motor_position;  // yaw电机编码器关节角 (rad)，云台相对底盘（预留，cmd 侧暂未使用）
+    float yaw_motor_vel;       // yaw电机编码器角速度 (rad/s)，云台相对底盘（预留，cmd 侧暂未使用）
 } gimbal2cmd_data_t;
 typedef struct
 {
