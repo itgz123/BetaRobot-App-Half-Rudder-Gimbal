@@ -405,6 +405,12 @@ void AppCmdInit(void)
         .daemon_reload = 100,
         .daemon_fault = DAEMON_FAULT_NONE,
         .lost_timeout_ms = 1000,
+        // 通道原始值范围（SBUS 协议标准值，换遥控器/重新校准时改这里）
+        .ch_range = {
+            .ch_min = FS_SBUS_CH_MIN,
+            .ch_max = FS_SBUS_CH_MAX,
+            .ch_center = FS_SBUS_CH_CENTER,
+        },
     };
     BSP_ASSERT_APP_CALL(SBUSConfig(&sbus_inst, &sbus_cfg));
 

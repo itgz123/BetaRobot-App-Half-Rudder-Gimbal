@@ -19,7 +19,7 @@
 #define yaw_acceleration 10.0f
 
 // 底盘平动，旋转速度(m/s,rad/s)
-#define chassis_translate_speed 2.0f // 摇杆通道满量程对应的平动速度
+#define chassis_translate_speed 4.0f // 摇杆通道满量程对应的平动速度
 #define chassis_rotate_speed 2.0f    // gyro(小陀螺)档的自转角速度，同时是 w 的限幅
 
 /* normal/hole 档底盘跟随云台的比例系数 [1/s]：
@@ -48,5 +48,10 @@
  * （即 gimbal2cmd 回传的 yaw_motor_position），读数就是该填的值。
  * 未标定时填 0：退化为"编码器零位即对正"。 */
 #define chassis_gimbal_offset DEG_TO_RAD(-30.0f)
+
+// 我们的flysky遥控参数
+#define FS_SBUS_CH_MIN 240
+#define FS_SBUS_CH_MAX 1807
+#define FS_SBUS_CH_CENTER 1024
 
 #endif // !__ROBOT_DEF_H
