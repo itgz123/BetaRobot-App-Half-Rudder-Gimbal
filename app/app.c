@@ -15,7 +15,7 @@
 #include "app_shoot.h"
 
 /* 日志实例定义 */
-LOG_INSTANCE_DEF(g_app_log, "app", 0); // app 层日志实例
+LOG_INSTANCE_DEF(g_app_log, "app", 255); // app 层日志实例
 
 /* 队列实例定义 */
 QUEUE_INSTANCE_DEF(cmd2shoot_queue, 1, cmd2shoot_data_t);
