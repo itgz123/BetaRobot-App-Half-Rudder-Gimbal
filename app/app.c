@@ -2,7 +2,7 @@
 #include "app_cfg.h"
 //
 #include "bsp_log.h"
-#include "bsp_sys_status.h"
+#include "bsp_app.h"
 #include "bsp_dwt.h"
 #include "lib_math.h"
 #include "bsp_freertos.h"
@@ -43,68 +43,10 @@ TASK_INSTANCE_DEF(cmd_task, CMD_STACK_SIZE);
 TASK_INSTANCE_DEF(gimbal_task, GIMBAL_STACK_SIZE);
 TASK_INSTANCE_DEF(shoot_task, SHOOT_STACK_SIZE);
 
-ITCM_RAM static __attribute__((noreturn)) void StartCmdTask(void *argument)
-{
-    static uint64_t start;
-    static uint64_t dt;
-    TickType_t xLastWakeTime = xTaskGetTickCount();        // 周期锚点(绝对唤醒时刻)
-    const TickType_t xPeriod = pdMS_TO_TICKS(CMD_FREQ_MS); // 任务周期(tick)
-    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "CMD Task Start");
-    for (;;)
-    {
-        vTaskDelayUntil(&xLastWakeTime, xPeriod); // 固定周期唤醒，避免 vTaskDelay 的周期漂移
-        start = DWT_GetTimeUs();
-        AppCmdRun();
-        dt = DWT_GetTimeUs() - start;
-        if (dt > 1000 * CMD_FREQ_MS)
-        {
-            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "CMD Task is being DELAY! dt = %llu(us)", dt);
-            BSP_ASSERT_TASK_TIMEOUT(); // 任务超时：系统状态计数 +1
-        }
-    }
-}
-
-ITCM_RAM static __attribute__((noreturn)) void StartGimbalTask(void *argument)
-{
-    static uint64_t start;
-    static uint64_t dt;
-    TickType_t xLastWakeTime = xTaskGetTickCount();           // 周期锚点(绝对唤醒时刻)
-    const TickType_t xPeriod = pdMS_TO_TICKS(GIMBAL_FREQ_MS); // 任务周期(tick)
-    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "GIMBAL Task Start");
-    for (;;)
-    {
-        vTaskDelayUntil(&xLastWakeTime, xPeriod); // 固定周期唤醒，避免 vTaskDelay 的周期漂移
-        start = DWT_GetTimeUs();
-        AppGimbalRun();
-        dt = DWT_GetTimeUs() - start;
-        if (dt > 1000 * GIMBAL_FREQ_MS)
-        {
-            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "GIMBAL Task is being DELAY! dt = %llu(us)", dt);
-            BSP_ASSERT_TASK_TIMEOUT(); // 任务超时：系统状态计数 +1
-        }
-    }
-}
-
-ITCM_RAM static __attribute__((noreturn)) void StartShootTask(void *argument)
-{
-    static uint64_t start;
-    static uint64_t dt;
-    TickType_t xLastWakeTime = xTaskGetTickCount();          // 周期锚点(绝对唤醒时刻)
-    const TickType_t xPeriod = pdMS_TO_TICKS(SHOOT_FREQ_MS); // 任务周期(tick)
-    BSPLOG(&g_app_log, LOG_LEVEL_INFO, "SHOOT Task Start");
-    for (;;)
-    {
-        vTaskDelayUntil(&xLastWakeTime, xPeriod); // 固定周期唤醒，避免 vTaskDelay 的周期漂移
-        start = DWT_GetTimeUs();
-        AppShootRun();
-        dt = DWT_GetTimeUs() - start;
-        if (dt > 1000 * SHOOT_FREQ_MS)
-        {
-            BSPLOG(&g_app_log, LOG_LEVEL_ERROR, "SHOOT Task is being DELAY! dt = %llu(us)", dt);
-            BSP_ASSERT_TASK_TIMEOUT(); // 任务超时：系统状态计数 +1
-        }
-    }
-}
+/* 任务函数：周期任务框架（固定周期唤醒 + 执行耗时监控 + 超时计数） */
+APP_TASK_DEF(Cmd, CMD_FREQ_MS, AppCmdRun);
+APP_TASK_DEF(Gimbal, GIMBAL_FREQ_MS, AppGimbalRun);
+APP_TASK_DEF(Shoot, SHOOT_FREQ_MS, AppShootRun);
 
 static void create_queue(void)
 {
