@@ -11,7 +11,7 @@
 #include "robot_def.h"
 
 /* USED开关 */
-#define BSP_ASSERT_USED             // 系统状态断言（集中记录 bsp/drv/app 初始化异常计数）
+#define BSP_SYS_STATUS_USED         // 系统状态计数（app 初始化错误 / FreeRTOS 任务超时）
 #define BSP_DWT_USED                // DWT 高精度定时器（系统时钟基础）
 #define BSP_GPIO_USED               // GPIO 管理 + EXTI 分发
 #define LIB_MATH_USED               // 数学库（向量/矩阵/四元数/三角函数）

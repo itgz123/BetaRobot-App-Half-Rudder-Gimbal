@@ -12,7 +12,7 @@
 #include "drv_bmi088.h"
 #include "lib_mahony.h"
 //
-#include "bsp_assert.h"
+#include "bsp_sys_status.h"
 
 // 实例
 DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
