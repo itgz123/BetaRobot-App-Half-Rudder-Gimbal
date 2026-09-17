@@ -571,7 +571,7 @@ ITCM_RAM void AppGimbalRun(void)
     /* 回传云台反馈给 cmd（规划器需要当前位置/速度；pitch_down 供视觉回传下pitch位姿角）。
      * yaw 与 yaw_vel 回传的是 IMU 世界系量：必须与上面 yaw 轴控制用的反馈同源，
      * 否则 cmd 的规划器会拿"相对底盘"的锚点去规划"世界系"的目标，每帧都差一个底盘航向。
-     * 同时视觉下发的 yaw 本就是世界系（见 app_cmd 的 gimbal_from_vision），回传也对齐。
+     * 同时视觉下发的 yaw 本就是世界系（见 app_cmd send_gimbal 的视觉分支），回传也对齐。
      * yaw_motor_* 另外回传编码器关节角（世界系量丢掉了"云台相对底盘"这一信息）：
      *   ⚠ cmd 侧 chassis_w_from_mode 的底盘跟随 w = kp*wrap(-yaw_position) 要的是相对角，
      *     现在拿的是世界系航向，normal/gyro 下会持续自转。这两个字段就是给它预留的，

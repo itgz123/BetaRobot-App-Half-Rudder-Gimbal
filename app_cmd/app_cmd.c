@@ -124,20 +124,6 @@ static float channel_deadzone(float ch)
     return (Lib_Math_Fabs(ch) < DEADZONE) ? 0.0f : ch;
 }
 
-/* 档位开关（三档）→ 状态机。沿用历史实现的极性：-1 = normal（上档）、
- * 0 = gyro（中档）、+1 = hole（下档），与 README「从上到下 0/1/2」顺序一致；
- * 若实车拨杆方向相反，交换首尾两个判断即可。 */
-static robot_mode sbus_mode(void)
-{
-    float sw = sbus_inst.sbus_data.ch[SBUS_CH_MODE];
-
-    if (sw < -sbus_half)
-        return robot_mode_normal; // 上档
-    if (sw > sbus_half)
-        return robot_mode_hole; // 下档
-    return robot_mode_gyro;     // 中档
-}
-
 // SBUS 摇杆 → 4 通道
 static void input_sbus(void)
 {
@@ -181,7 +167,16 @@ static void input_update(void)
         return; // 总开关断开 → 失能停车
 
     // 总开关已打开：解出状态机与开火
-    cmd_ctx.mode = sbus_mode();
+    // 档位开关（三档）→ 状态机。沿用历史实现的极性：-1 = normal（上档）、
+    // 0 = gyro（中档）、+1 = hole（下档），与 README「从上到下 0/1/2」顺序一致；
+    // 若实车拨杆方向相反，交换首尾两个判断即可。
+    float sw = sbus_inst.sbus_data.ch[SBUS_CH_MODE];
+    if (sw < -sbus_half)
+        cmd_ctx.mode = robot_mode_normal; // 上档
+    else if (sw > sbus_half)
+        cmd_ctx.mode = robot_mode_hole; // 下档
+    else
+        cmd_ctx.mode = robot_mode_gyro; // 中档
     cmd_ctx.fire = (sbus_inst.sbus_data.ch[SBUS_CH_FIRE] > sbus_half) ? 1 : 0;
 
     // 云台控制权：自瞄开关打开且视觉有目标 → 交给视觉，否则由摇杆控制
@@ -209,80 +204,14 @@ static void input_update(void)
 }
 
 /*======== 处理层：统一上下文 → 各执行器设定值 =========*/
-// 云台默认：失能（mode 由状态机给，stop 时 motor 侧不动作）+ 设定值清零
-static void gimbal_default(void)
-{
-    cmd_cmd2gimbal_data.mode = cmd_ctx.mode;
-    cmd_cmd2gimbal_data.pitch_x = 0.0f;
-    cmd_cmd2gimbal_data.pitch_v = 0.0f;
-    cmd_cmd2gimbal_data.pitch_a = 0.0f;
-    cmd_cmd2gimbal_data.yaw_x = 0.0f;
-    cmd_cmd2gimbal_data.yaw_v = 0.0f;
-    cmd_cmd2gimbal_data.yaw_a = 0.0f;
-}
-
-// 视觉源：直接给 位置/速度/加速度，不过规划器
-static void gimbal_from_vision(void)
-{
-    // 单位约定：视觉 pitch/yaw 为 deg（转 rad）；v/a 为 rad/s、rad/s²（不转）
-    // 坐标系：pitch 为 base-relative（与 app_gimbal 一致）；yaw 为世界系（需标定对齐电机系）
-    cmd_cmd2gimbal_data.pitch_x = DEG_TO_RAD(vision_recv_data.pitch_base_relative);
-    cmd_cmd2gimbal_data.pitch_v = vision_recv_data.v_pitch_base_relative;
-    cmd_cmd2gimbal_data.pitch_a = vision_recv_data.a_pitch_base_relative;
-    cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
-    cmd_cmd2gimbal_data.yaw_v = vision_recv_data.v_yaw;
-    cmd_cmd2gimbal_data.yaw_a = vision_recv_data.a_yaw;
-}
-
-// 通道源（sbus / 图传 / 键鼠）：摇杆 -1~1 → 目标速度 → 规划器
-static void gimbal_from_planner(void)
-{
-    PlannerInput_s in;
-    PlannerOutput_s out;
-
-    // pitch：限幅模式（有机械限位）
-    in.current_position = cmd_gimbal2cmd_data.pitch_position;
-    in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
-    in.current_acceleration = 0.0f; // 电机无加速度反馈
-    in.target_cmd = channel_deadzone(cmd_ctx.gimbal_pitch_channel);
-    PlannerCalculate(&pitch_planner, &in, &out);
-    cmd_cmd2gimbal_data.pitch_x = out.position;
-    cmd_cmd2gimbal_data.pitch_v = out.speed;
-    cmd_cmd2gimbal_data.pitch_a = out.acceleration;
-
-    // yaw：环绕模式（无限旋转）。锚点用 IMU 世界系航向，与云台侧 yaw 轴的反馈同源，
-    // 这样规划出的目标直接就是世界系角度，不需要在两边做坐标系换算
-    in.current_position = cmd_gimbal2cmd_data.yaw_position;
-    in.current_speed = cmd_gimbal2cmd_data.yaw_vel;
-    in.current_acceleration = 0.0f;
-    // 取反：yaw 已约定逆时针为正（gimbal 端电机方向镜像），此处补偿以保持摇杆物理转向不变
-    in.target_cmd = channel_deadzone(-cmd_ctx.gimbal_yaw_channel);
-    PlannerCalculate(&yaw_planner, &in, &out);
-    cmd_cmd2gimbal_data.yaw_x = out.position;
-    cmd_cmd2gimbal_data.yaw_v = out.speed;
-    cmd_cmd2gimbal_data.yaw_a = out.acceleration;
-}
-
-/* 云台指向相对底盘前进方向的真实夹角 θ (rad)，逆时针为正。
- * 取 yaw 电机编码器关节角（云台相对底盘）再减掉机械零位偏置：装配后编码器零位
- * 与"云台指向 = 底盘前进方向"对不齐，差的就是 chassis_gimbal_offset
- * （底盘前进方向本身已由底盘侧的舵轮零位标定好，云台这边只补这一个角）。
- * 底盘跟随的 w 和摇杆向量的旋转都必须用这个 θ：一个决定车身转到哪，一个决定往哪走，
- * 两者不同源就会差一个偏置角（车身停在编码器零位，向量却按真实朝向旋转）。 */
-static float chassis_gimbal_angle(void)
-{
-    return Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
-}
-
 /* 底盘自转速度 w (rad/s)：底盘是云台的纯伺服机构，只执行 (enabled, vx, vy, w)，
  * 模式相关的 w 全部在这里按状态机算好再发下去。
  *   normal / hole：跟随——把"云台相对底盘的角度"θ 拉回 0，底盘即转回云台指向
  *   gyro         ：定值自转（底盘自转、云台锁世界系航向，操作手照常瞄准）
  *   stop         ：0
  *
- * 跟随用的是 yaw_motor_position（yaw 电机编码器关节角，"云台相对底盘、逆时针为正"），
- * 不是 yaw_position —— 后者是 IMU 的世界系航向，底盘一转就变，拿它做跟随会持续自转。
- * 两边的角度约定一致：yaw 电机 feedback_direction 已镜像成"逆时针为正"，
+ * θ 是"云台相对底盘的夹角、逆时针为正"，由调用方算出后传入（见 send_chassis）。
+ * 两边角度约定一致：yaw 电机 feedback_direction 已镜像成"逆时针为正"，
  * 底盘侧 w 的定义也是"逆时针为正"（见 app_chassis 的 HalfRudderInverse 注释）。
  *
  * 跟随律 w = +kp × wrap(θ) 的负反馈：底盘逆时针转 → 云台相对底盘的角度 θ 减小 → w 减小，
@@ -293,7 +222,7 @@ static float chassis_gimbal_angle(void)
  *
  * ⚠ 实车标定：先架空轮子给一个小 yaw 偏角，确认底盘转向能让 θ 归零；
  *   若越转越偏（转反了），把 chassis_follow_kp 取负。再从 1 左右往上加到跟得上又不抖。 */
-static float chassis_w_from_mode(void)
+static float chassis_w_from_mode(float theta)
 {
     float w = 0.0f;
 
@@ -303,7 +232,6 @@ static float chassis_w_from_mode(void)
     }
     else if ((robot_mode_normal == cmd_ctx.mode) || (robot_mode_hole == cmd_ctx.mode))
     {
-        float theta = chassis_gimbal_angle();
         // 死区内不跟随：θ 已经在 0 附近，再给 w 只会让车身被编码器噪声/传动回差推着来回蹭
         if (Lib_Math_Fabs(theta) > chassis_follow_deadzone)
             w = chassis_follow_kp * theta;
@@ -313,18 +241,59 @@ static float chassis_w_from_mode(void)
 }
 
 /*======== 发送层 =========*/
-// 给云台（队列）
+// 给云台（队列）：统一上下文 → 位置/速度/加速度
 static void send_gimbal(void)
 {
-    gimbal_default();
+    // 默认：失能（mode 由状态机给，stop 时 motor 侧不动作）+ 设定值清零
+    cmd_cmd2gimbal_data.mode = cmd_ctx.mode;
+    cmd_cmd2gimbal_data.pitch_x = 0.0f;
+    cmd_cmd2gimbal_data.pitch_v = 0.0f;
+    cmd_cmd2gimbal_data.pitch_a = 0.0f;
+    cmd_cmd2gimbal_data.yaw_x = 0.0f;
+    cmd_cmd2gimbal_data.yaw_v = 0.0f;
+    cmd_cmd2gimbal_data.yaw_a = 0.0f;
+
     if (visual_control_e == cmd_ctx.type)
     {
-        gimbal_from_vision(); // 视觉：直接给位置/速度/加速度
+        // 视觉源：直接给 位置/速度/加速度，不过规划器
+        // 单位约定：视觉 pitch/yaw 为 deg（转 rad）；v/a 为 rad/s、rad/s²（不转）
+        // 坐标系：pitch 为 base-relative（与 app_gimbal 一致）；yaw 为世界系（需标定对齐电机系）
+        cmd_cmd2gimbal_data.pitch_x = DEG_TO_RAD(vision_recv_data.pitch_base_relative);
+        cmd_cmd2gimbal_data.pitch_v = vision_recv_data.v_pitch_base_relative;
+        cmd_cmd2gimbal_data.pitch_a = vision_recv_data.a_pitch_base_relative;
+        cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
+        cmd_cmd2gimbal_data.yaw_v = vision_recv_data.v_yaw;
+        cmd_cmd2gimbal_data.yaw_a = vision_recv_data.a_yaw;
     }
     else
     {
-        gimbal_from_planner(); // 通道 → 规划器 → 位置/速度/加速度
+        // 通道源（sbus / 图传 / 键鼠）：摇杆 -1~1 → 目标速度 → 规划器
+        PlannerInput_s in;
+        PlannerOutput_s out;
+
+        // pitch：限幅模式（有机械限位）
+        in.current_position = cmd_gimbal2cmd_data.pitch_position;
+        in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
+        in.current_acceleration = 0.0f; // 电机无加速度反馈
+        in.target_cmd = channel_deadzone(cmd_ctx.gimbal_pitch_channel);
+        PlannerCalculate(&pitch_planner, &in, &out);
+        cmd_cmd2gimbal_data.pitch_x = out.position;
+        cmd_cmd2gimbal_data.pitch_v = out.speed;
+        cmd_cmd2gimbal_data.pitch_a = out.acceleration;
+
+        // yaw：环绕模式（无限旋转）。锚点用 IMU 世界系航向，与云台侧 yaw 轴的反馈同源，
+        // 这样规划出的目标直接就是世界系角度，不需要在两边做坐标系换算
+        in.current_position = cmd_gimbal2cmd_data.yaw_position;
+        in.current_speed = cmd_gimbal2cmd_data.yaw_vel;
+        in.current_acceleration = 0.0f;
+        // 取反：yaw 已约定逆时针为正（gimbal 端电机方向镜像），此处补偿以保持摇杆物理转向不变
+        in.target_cmd = channel_deadzone(-cmd_ctx.gimbal_yaw_channel);
+        PlannerCalculate(&yaw_planner, &in, &out);
+        cmd_cmd2gimbal_data.yaw_x = out.position;
+        cmd_cmd2gimbal_data.yaw_v = out.speed;
+        cmd_cmd2gimbal_data.yaw_a = out.acceleration;
     }
+
     xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data);
 }
 
@@ -338,7 +307,15 @@ static void send_gimbal(void)
  * 旋转量很小；等 θ 收敛到 0 就与"直接发车身系 vx/vy"等价。 */
 static void send_chassis(void)
 {
-    float theta = chassis_gimbal_angle();
+    /* 云台指向相对底盘前进方向的真实夹角 θ (rad)，逆时针为正。
+     * 取 yaw 电机编码器关节角（云台相对底盘）再减掉机械零位偏置：装配后编码器零位
+     * 与"云台指向 = 底盘前进方向"对不齐，差的就是 chassis_gimbal_offset
+     * （底盘前进方向本身已由底盘侧的舵轮零位标定好，云台这边只补这一个角）。
+     * 底盘跟随的 w 和摇杆向量的旋转都必须用这个 θ：一个决定车身转到哪，一个决定往哪走，
+     * 两者不同源就会差一个偏置角（车身停在编码器零位，向量却按真实朝向旋转）。
+     * 用的是 yaw_motor_position（编码器关节角）而不是 yaw_position —— 后者是 IMU 的
+     * 世界系航向，底盘一转就变，拿它做跟随会持续自转。 */
+    float theta = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
     float c = Lib_Math_Cos(theta);
     float s = Lib_Math_Sin(theta);
     // 摇杆 → 云台指向坐标系下的速度向量 (vx 前+、vy 左+)
@@ -348,7 +325,7 @@ static void send_chassis(void)
     gimbal2chassis_data.enabled = cmd_ctx.mode; // robot_mode_stop = 失能
     gimbal2chassis_data.vx = c * vx_stick - s * vy_stick;
     gimbal2chassis_data.vy = s * vx_stick + c * vy_stick;
-    gimbal2chassis_data.w = chassis_w_from_mode();
+    gimbal2chassis_data.w = chassis_w_from_mode(theta);
 
     CommSend(&chassis_comm, (uint8_t *)&gimbal2chassis_data);
 }
