@@ -99,6 +99,10 @@ COMM_DEF(chassis_comm, MEDIA_CAN_IDSEQ, CUSTOM, CUSTOM, chassis2gimbal_data_t, 1
 
 // AppCmdRun内部上下文
 static AppCmdRun_ctx_struct cmd_ctx;
+/* 上一拍生效的控制源：用于识别「视觉 → 通道源」的交还边沿，在其首拍给规划器累加器播种。
+ * 视觉期间 send_gimbal 走的是直通分支、planner 不被调用，累加器停在旧值上，
+ * 交还时不重新锚定会让云台目标瞬间跳到旧值。 */
+static cmd_control_type cmd_last_control_type = no_control_e;
 
 /*============================================
  *              私有函数
@@ -253,6 +257,16 @@ static void send_gimbal(void)
     cmd_cmd2gimbal_data.yaw_v = 0.0f;
     cmd_cmd2gimbal_data.yaw_a = 0.0f;
 
+    /* 规划器位置累加器的播种条件（planner 内部为开环累加，不读反馈，故需显式重新锚定）：
+     *   ① 失能期间每拍播种：累加器持续跟随反馈，使能首拍目标 = 当前实际位置，不突变。
+     *      不用边沿检测是为了不依赖恰好抓到使能那一帧，sbus 掉线恢复也自然覆盖。
+     *   ② 视觉交还通道源的首拍播种一次：视觉期间 planner 被绕过、累加器停在旧值，
+     *      交还时用当前反馈重新锚定。
+     * 视觉接管瞬间（通道源→视觉）不播种：本拍 planner 不被调用，旧值无人消费。 */
+    uint8_t seed_position =
+        (robot_mode_stop == cmd_ctx.mode) ||
+        ((visual_control_e == cmd_last_control_type) && (visual_control_e != cmd_ctx.type));
+
     if (visual_control_e == cmd_ctx.type)
     {
         // 视觉源：直接给 位置/速度/加速度，不过规划器
@@ -268,10 +282,12 @@ static void send_gimbal(void)
     else
     {
         // 通道源（sbus / 图传 / 键鼠）：摇杆 -1~1 → 目标速度 → 规划器
-        PlannerInput_s in;
+        PlannerInput_s in = {0}; // 值初始化，避免漏赋值字段（尤其新增的 seed）
         PlannerOutput_s out;
+        in.seed = seed_position; // 两个轴同拍播种
 
-        // pitch：限幅模式（有机械限位）
+        // pitch：限幅模式（有机械限位）。目标位置由 planner 内部开环累加，下面两个
+        // current_* 只在 seed 拍被用来重新锚定累加器（电流外推不再读反馈位置）
         in.current_position = cmd_gimbal2cmd_data.pitch_position;
         in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
         in.current_acceleration = 0.0f; // 电机无加速度反馈
@@ -281,8 +297,9 @@ static void send_gimbal(void)
         cmd_cmd2gimbal_data.pitch_v = out.speed;
         cmd_cmd2gimbal_data.pitch_a = out.acceleration;
 
-        // yaw：环绕模式（无限旋转）。锚点用 IMU 世界系航向，与云台侧 yaw 轴的反馈同源，
-        // 这样规划出的目标直接就是世界系角度，不需要在两边做坐标系换算
+        // yaw：环绕模式（无限旋转）。累加器以 IMU 世界系航向为锚点（播种拍），与云台侧 yaw 轴的
+        // 反馈同源，所以累加出的目标直接就是世界系角度，不需要在两边做坐标系换算。
+        // 开环累加下这一路天然就是"锁世界系航向"：底盘被推动/自转不会改变目标，云台反向补偿
         in.current_position = cmd_gimbal2cmd_data.yaw_position;
         in.current_speed = cmd_gimbal2cmd_data.yaw_vel;
         in.current_acceleration = 0.0f;
@@ -293,6 +310,8 @@ static void send_gimbal(void)
         cmd_cmd2gimbal_data.yaw_v = out.speed;
         cmd_cmd2gimbal_data.yaw_a = out.acceleration;
     }
+
+    cmd_last_control_type = cmd_ctx.type; // 记录本拍控制源（须在读取 seed_position 之后）
 
     xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data);
 }
@@ -392,6 +411,12 @@ void AppCmdInit(void)
     BSP_ASSERT_APP_CALL(SBUSConfig(&sbus_inst, &sbus_cfg));
 
     // 初始化规划器（位置限幅/位置模式/最大速度/最大加速度）
+    /* TODO 实车核对 pitch 限位基准：这里用的是「下 pitch 直立、上 pitch 水平」为原点的量纲
+     *      （U1-U2 / U3-U2），而 gimbal 回传的 pitch_position 是以「两轴都倒下」为原点的
+     *      (u - U0) - (d - Dmin)（app_gimbal.c 的反馈合成式）。两者相差约 0.0213 rad(≈1.2°)：
+     *      当前下限比机械可达下限低 1.2°、上限提前 1.2° 停住。开环累加后目标不再每拍被反馈
+     *      拉回，停在错位边界上的表现会更明显。确认标定姿态后应改为
+     *      U1-U0-(Dmax-Dmin) / U3-U0-(Dmax-Dmin)（≈ -0.4359 / 0.7876）。 */
     Planner_Init_Config_s pitch_cfg = {
         .position_mode = PLANNER_POS_LIMITED, // pitch 有机械限位 → 限幅
         .pos_limit_min = pitchup_position_1 - pitchup_position_2,
