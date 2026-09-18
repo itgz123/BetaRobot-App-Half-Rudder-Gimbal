@@ -41,7 +41,11 @@
 #define DRV_COMM_USED               //
 #define LIB_FORMAT_USED             // 快速格式化（零除法整数转换，bsp_log 依赖）
 #define BSP_LOG_USED                // 日志输出
-#define BMI088_HEAT_USED
+//
+/* TODO 加热器已从 drv_bmi088 移出、不再参与编译（IMU 不加热 → 不存在热坏风险）。
+ *      后续独立为 drv_heater：温度取自 BMI088GetTemperature，控温由 app 任务驱动，
+ *      TIM8 OPM+RCR 安全链下沉 bsp_tim；届时在此加 DRV_HEATER_USED 开关。
+ *      旧实现（含 8 层安全设计）见 git 历史 drv/drv_bmi088/drv_bmi088_heater.c */
 //
 #define GENERATE_DISASSEMBLY // 生成反汇编文件 .lst
 #define GENERATE_READELF     // 生成 readelf 输出文件
