@@ -19,8 +19,9 @@
 #define yaw_acceleration 10.0f
 
 // 底盘平动，旋转速度(m/s,rad/s)
-#define chassis_translate_speed 4.0f // 摇杆通道满量程对应的平动速度
-#define chassis_rotate_speed 2.0f    // gyro(小陀螺)档的自转角速度，同时是 w 的限幅
+#define chassis_translate_speed 6.0f     // 平动最大速度：速度旋钮打到最大档时，摇杆通道满量程对应的平动速度
+#define chassis_translate_speed_min 1.0f // 平动最小速度：速度旋钮打到最小档时，摇杆通道满量程对应的平动速度
+#define chassis_rotate_speed 2.0f        // gyro(小陀螺)档的自转角速度，同时是 w 的限幅
 
 /* normal/hole 档底盘跟随云台的比例系数 [1/s]：
  * w = chassis_follow_kp * wrap(云台相对底盘的 yaw 角)，把云台相对底盘的角度拉回 0，

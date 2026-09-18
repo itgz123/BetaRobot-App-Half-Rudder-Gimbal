@@ -26,7 +26,7 @@
 #define DEADZONE (0.01f)
 #define sbus_half 0.5 // 判断开关通道float等于1/-1/0
 
-/* SBUS 通道分配（0 基；摇杆 -1~1，三档开关 -1/0/+1）
+/* SBUS 通道分配（0 基；摇杆 -1~1，三档开关 -1/0/+1，旋钮 -1~1）
  * 注：README「操作逻辑」一节写的拨杆号与代码不一致（那里把自瞄放在第 7 路、
  *     第 5 路未用），这里以实机在用的映射为准。 */
 #define SBUS_CH_VY 0     // 右摇杆左右 → 底盘 vy
@@ -37,6 +37,7 @@
 #define SBUS_CH_AIM 5    // 自瞄开关：与视觉"有目标"同时成立才把云台交给视觉
 #define SBUS_CH_MODE 6   // 档位开关（三档）：normal / gyro / hole
 #define SBUS_CH_FIRE 7   // 开火
+#define SBUS_CH_SPEED 8  // 速度旋钮：缩放底盘平动最大速度（最小档 ~ 最大档）
 
 /*============================================
  *              枚举
@@ -53,7 +54,7 @@ typedef enum : uint8_t
 
 /* AppCmdRun 的帧内上下文：{sbus遥控，图传，键鼠，视觉} 统一接口控制 {云台，底盘，发射，视觉}。
  *
- * 输入源（sbus / 图传 / 键鼠）只负责把自身输入翻译成这里的 4 个归一化通道(-1~1)，
+ * 输入源（sbus / 图传 / 键鼠）只负责把自身输入翻译成这里的 归一化通道(-1~1)，
  * 外加 状态机/开火 两个开关量；下游（云台规划、底盘解算、开火、状态回传）只认这份
  * 上下文，不再各自去读某个遥控源。视觉源是特例：不写通道，直接给出云台 位置/速度/加速度。 */
 typedef struct
@@ -63,11 +64,12 @@ typedef struct
     robot_mode mode; // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
     uint8_t fire;    // 开火
 
-    // 4 个归一化通道 (-1~1)，中位 0
-    float gimbal_pitch_channel; // 云台 pitch
-    float gimbal_yaw_channel;   // 云台 yaw
-    float chassis_vx_channel;   // 底盘前后
-    float chassis_vy_channel;   // 底盘左右
+    // 归一化通道 (-1~1)：摇杆/开关中位 0
+    float gimbal_pitch_channel;  // 云台 pitch
+    float gimbal_yaw_channel;    // 云台 yaw
+    float chassis_vx_channel;    // 底盘前后
+    float chassis_vy_channel;    // 底盘左右
+    float chassis_speed_channel; // 底盘平动速度旋钮：-1 = 最小速度档，+1 = 最大速度档（非回中，无死区）
 } AppCmdRun_ctx_struct;
 
 /*============================================
@@ -135,6 +137,8 @@ static void input_sbus(void)
     cmd_ctx.gimbal_yaw_channel = sbus_inst.sbus_data.ch[SBUS_CH_YAW];
     cmd_ctx.chassis_vx_channel = sbus_inst.sbus_data.ch[SBUS_CH_VX];
     cmd_ctx.chassis_vy_channel = sbus_inst.sbus_data.ch[SBUS_CH_VY];
+    // 旋钮不回中、也不该被死区吃掉，原值直接用
+    cmd_ctx.chassis_speed_channel = sbus_inst.sbus_data.ch[SBUS_CH_SPEED];
 }
 
 /* 图传遥控 → 4 通道
@@ -162,6 +166,7 @@ static void input_update(void)
     cmd_ctx.gimbal_yaw_channel = 0.0f;
     cmd_ctx.chassis_vx_channel = 0.0f;
     cmd_ctx.chassis_vy_channel = 0.0f;
+    cmd_ctx.chassis_speed_channel = 0.0f; // 中位 = 速度区间中点（失能时无意义）
 
     /* 源选择暂时只建立在 SBUS 遥控在线的基础上：遥控掉线 → 全部失能。
      * 图传/键鼠接入后，在这里追加各自的在线判断与优先级。 */
@@ -337,9 +342,17 @@ static void send_chassis(void)
     float theta = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
     float c = Lib_Math_Cos(theta);
     float s = Lib_Math_Sin(theta);
+    /* 速度旋钮调速：ch8 (-1~1) 线性映射成本拍可用的平动最大速度
+     *   knob = -1 → chassis_translate_speed_min（慢速档）
+     *   knob =  0 → 区间中点
+     *   knob = +1 → chassis_translate_speed（全速档）
+     * 摇杆只决定方向与在该上限内的比例，满舵 = 该档位的最大速度。 */
+    float translate_speed = (chassis_translate_speed - chassis_translate_speed_min) *
+                                (cmd_ctx.chassis_speed_channel + 1.0f) * 0.5f +
+                            chassis_translate_speed_min;
     // 摇杆 → 云台指向坐标系下的速度向量 (vx 前+、vy 左+)
-    float vx_stick = channel_deadzone(cmd_ctx.chassis_vx_channel) * chassis_translate_speed;
-    float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * chassis_translate_speed;
+    float vx_stick = channel_deadzone(cmd_ctx.chassis_vx_channel) * translate_speed;
+    float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * translate_speed;
 
     gimbal2chassis_data.enabled = cmd_ctx.mode; // robot_mode_stop = 失能
     gimbal2chassis_data.vx = c * vx_stick - s * vy_stick;
