@@ -18,6 +18,12 @@
 #include "bsp_dwt.h"
 //
 #include <string.h>
+/*
+底盘和云台都需要添加yaw轴前馈：
+chassis：ch3通道控制云台旋转，但是底盘需要等和云台出现相对角度误差了才旋转，导致出现延迟。
+         （已实现：机器人侧宏 chassis_follow_ff + chassis_w_from_mode 的前馈项）
+gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等出现误差再纠正就延迟了。（先不加，做todo）
+ */
 
 /*============================================
  *              宏
@@ -37,7 +43,8 @@
 #define SBUS_CH_AIM 5    // 自瞄开关：与视觉"有目标"同时成立才把云台交给视觉
 #define SBUS_CH_MODE 6   // 档位开关（三档）：normal / gyro / hole
 #define SBUS_CH_FIRE 7   // 开火
-#define SBUS_CH_SPEED 8  // 速度旋钮：缩放底盘平动最大速度（最小档 ~ 最大档）
+#define SBUS_CH_SPEED 8  // 平动速度旋钮：缩放底盘平动最大速度（最小档 ~ 最大档）
+#define SBUS_CH_ROTATE 9 // 旋转速度旋钮：缩放 gyro(小陀螺)档的自转角速度（最小档 ~ 最大档）
 
 /*============================================
  *              枚举
@@ -65,11 +72,12 @@ typedef struct
     uint8_t fire;    // 开火
 
     // 归一化通道 (-1~1)：摇杆/开关中位 0
-    float gimbal_pitch_channel;  // 云台 pitch
-    float gimbal_yaw_channel;    // 云台 yaw
-    float chassis_vx_channel;    // 底盘前后
-    float chassis_vy_channel;    // 底盘左右
-    float chassis_speed_channel; // 底盘平动速度旋钮：-1 = 最小速度档，+1 = 最大速度档（非回中，无死区）
+    float gimbal_pitch_channel;   // 云台 pitch
+    float gimbal_yaw_channel;     // 云台 yaw
+    float chassis_vx_channel;     // 底盘前后
+    float chassis_vy_channel;     // 底盘左右
+    float chassis_speed_channel;  // 底盘平动速度旋钮：-1 = 最小速度档，+1 = 最大速度档（非回中，无死区）
+    float chassis_rotate_channel; // 小陀螺转速旋钮：同上，缩放 gyro 档自转角速度
 } AppCmdRun_ctx_struct;
 
 /*============================================
@@ -105,6 +113,11 @@ static AppCmdRun_ctx_struct cmd_ctx;
  * 视觉期间 send_gimbal 走的是直通分支、planner 不被调用，累加器停在旧值上，
  * 交还时不重新锚定会让云台目标瞬间跳到旧值。 */
 static cmd_control_type cmd_last_control_type = no_control_e;
+/* 本拍云台 yaw 轴的指令角速度 (rad/s，世界系、逆时针为正)：摇杆源取规划器输出的轨迹速度
+ * （含加速度限幅，就是云台真正要执行的角速度），视觉源取视觉下发的 v_yaw。
+ * 供底盘跟随前馈使用（见 chassis_w_from_mode）。
+ * 依赖 AppCmdRun 里 send_gimbal 先于 send_chassis 调用：两者同拍，读到的就是本拍的指令。 */
+static float cmd_gimbal_yaw_rate_cmd = 0.0f;
 
 /*============================================
  *              私有函数
@@ -130,6 +143,16 @@ static float channel_deadzone(float ch)
     return (Lib_Math_Fabs(ch) < DEADZONE) ? 0.0f : ch;
 }
 
+/* 旋钮调速：归一化通道 (-1~1) 线性映射到 [v_min, v_max]
+ *   ch = -1 → v_min（旋钮最小档）
+ *   ch =  0 → 区间中点
+ *   ch = +1 → v_max（旋钮最大档）
+ * 旋钮不回中，故调用方直接用通道原值，不套 channel_deadzone。 */
+static float knob_scale(float ch, float v_min, float v_max)
+{
+    return (v_max - v_min) * (ch + 1.0f) * 0.5f + v_min;
+}
+
 // SBUS 摇杆 → 4 通道
 static void input_sbus(void)
 {
@@ -139,6 +162,7 @@ static void input_sbus(void)
     cmd_ctx.chassis_vy_channel = sbus_inst.sbus_data.ch[SBUS_CH_VY];
     // 旋钮不回中、也不该被死区吃掉，原值直接用
     cmd_ctx.chassis_speed_channel = sbus_inst.sbus_data.ch[SBUS_CH_SPEED];
+    cmd_ctx.chassis_rotate_channel = sbus_inst.sbus_data.ch[SBUS_CH_ROTATE];
 }
 
 /* 图传遥控 → 4 通道
@@ -166,7 +190,8 @@ static void input_update(void)
     cmd_ctx.gimbal_yaw_channel = 0.0f;
     cmd_ctx.chassis_vx_channel = 0.0f;
     cmd_ctx.chassis_vy_channel = 0.0f;
-    cmd_ctx.chassis_speed_channel = 0.0f; // 中位 = 速度区间中点（失能时无意义）
+    cmd_ctx.chassis_speed_channel = 0.0f;  // 中位 = 速度区间中点（失能时无意义）
+    cmd_ctx.chassis_rotate_channel = 0.0f; // 中位 = 转速区间中点（失能时无意义）
 
     /* 源选择暂时只建立在 SBUS 遥控在线的基础上：遥控掉线 → 全部失能。
      * 图传/键鼠接入后，在这里追加各自的在线判断与优先级。 */
@@ -216,37 +241,49 @@ static void input_update(void)
 /* 底盘自转速度 w (rad/s)：底盘是云台的纯伺服机构，只执行 (enabled, vx, vy, w)，
  * 模式相关的 w 全部在这里按状态机算好再发下去。
  *   normal / hole：跟随——把"云台相对底盘的角度"θ 拉回 0，底盘即转回云台指向
- *   gyro         ：定值自转（底盘自转、云台锁世界系航向，操作手照常瞄准）
+ *   gyro         ：定值自转（底盘自转、云台锁世界系航向，操作手照常瞄准），转速由 ch9 旋钮缩放
  *   stop         ：0
  *
  * θ 是"云台相对底盘的夹角、逆时针为正"，由调用方算出后传入（见 send_chassis）。
  * 两边角度约定一致：yaw 电机 feedback_direction 已镜像成"逆时针为正"，
  * 底盘侧 w 的定义也是"逆时针为正"（见 app_chassis 的 HalfRudderInverse 注释）。
  *
- * 跟随律 w = +kp × wrap(θ) 的负反馈：底盘逆时针转 → 云台相对底盘的角度 θ 减小 → w 减小，
- * 直到 θ = 0（云台指向与底盘前进方向重合）。θ 以 kp 的速率指数收敛。
- * 注意此式成立的前提是云台轴锁"世界系航向"（IMU 反馈）：底盘转动时云台的世界指向不动，
- * θ 才会真的变化。若云台轴锁的是关节角，底盘一转云台就被拖着同转、θ 恒定，
- * 跟随环没有负反馈，w 会一直停在初值上自转。
+ * 跟随律是"比例项 + 前馈项"：w = chassis_follow_kp × wrap(θ) + chassis_follow_ff × ω_yaw。
+ * 比例项：底盘朝让 θ 归零的方向转（θ = 0 即云台指向与底盘前进方向重合），
+ * 误差按 kp 的速率指数收敛。该律成立的前提是云台轴锁"世界系航向"（IMU 反馈）：
+ * 底盘转动时云台的世界指向不动，θ 才会真的变化。若云台轴锁的是关节角，
+ * 底盘一转云台就被拖着同转、θ 恒定，跟随环没有负反馈，w 会一直停在初值上自转。
+ * 前馈项（ω_yaw = 云台 yaw 轴的指令角速度，由调用方传入）：比例项只能等 θ 建立误差后
+ * 才动作，操作手推 yaw 摇杆时底盘起步慢半拍；前馈让底盘与云台"同速转"，
+ * θ 根本不被拉开，kp 只收拾残余误差（详见 robot_def.h 的注释）。
  *
  * ⚠ 实车标定：先架空轮子给一个小 yaw 偏角，确认底盘转向能让 θ 归零；
- *   若越转越偏（转反了），把 chassis_follow_kp 取负。再从 1 左右往上加到跟得上又不抖。 */
-static float chassis_w_from_mode(float theta)
+ *   转向反了就把 kp 取负（本车实际符号与上面"逆时针为正"的推导相反，kp 与 ff 都取了负）。
+ *   再把 |kp| 从 1 左右往上加到跟得上又不抖。 */
+static float chassis_w_from_mode(float theta, float yaw_rate_cmd)
 {
-    float w = 0.0f;
-
     if (robot_mode_gyro == cmd_ctx.mode)
     {
-        w = chassis_rotate_speed;
-    }
-    else if ((robot_mode_normal == cmd_ctx.mode) || (robot_mode_hole == cmd_ctx.mode))
-    {
-        // 死区内不跟随：θ 已经在 0 附近，再给 w 只会让车身被编码器噪声/传动回差推着来回蹭
-        if (Lib_Math_Fabs(theta) > chassis_follow_deadzone)
-            w = chassis_follow_kp * theta;
+        // gyro 档底盘在定速自转、云台锁世界系航向让操作手照常瞄准：两者互不跟随，
+        // 不加 yaw 前馈（否则瞄准时摇杆会叠加到自转速度上，自转不再是定值），
+        // 也不吃跟随限幅——这个定值由旋转速度旋钮（ch9）缩放后恒等输出
+        return knob_scale(cmd_ctx.chassis_rotate_channel,
+                          chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
     }
 
-    return Lib_Math_Clamp(w, -chassis_rotate_speed, chassis_rotate_speed);
+    if ((robot_mode_normal != cmd_ctx.mode) && (robot_mode_hole != cmd_ctx.mode))
+        return 0.0f; // stop：失能，w 给 0
+
+    // 前馈：跟着云台的指令角速度一起转，底盘不等误差、起步即同步。
+    // 不受死区影响——云台静止时 ω_yaw 自然是 0，死区只需管住下面那个比例项
+    float w = chassis_follow_ff * yaw_rate_cmd;
+    // 死区内不跟随：θ 已经在 0 附近，再给比例项只会让车身被编码器噪声/传动回差推着来回蹭
+    if (Lib_Math_Fabs(theta) > chassis_follow_deadzone)
+        w += chassis_follow_kp * theta;
+
+    // 限幅只压在跟随输出（比例项 + 前馈）上：前馈可能会把 w 顶到云台 yaw_speed 那么大，
+    // 超出底盘能跟上的能力，限幅既防打滑也防标定发散的抖动
+    return Lib_Math_Clamp(w, -chassis_follow_w_limit, chassis_follow_w_limit);
 }
 
 /*======== 发送层 =========*/
@@ -283,6 +320,8 @@ static void send_gimbal(void)
         cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
         cmd_cmd2gimbal_data.yaw_v = vision_recv_data.v_yaw;
         cmd_cmd2gimbal_data.yaw_a = vision_recv_data.a_yaw;
+        // 底盘跟随前馈：视觉转云台时底盘也要同步跟上，前馈同样取视觉给的角速度
+        cmd_gimbal_yaw_rate_cmd = vision_recv_data.v_yaw;
     }
     else
     {
@@ -314,6 +353,9 @@ static void send_gimbal(void)
         cmd_cmd2gimbal_data.yaw_x = out.position;
         cmd_cmd2gimbal_data.yaw_v = out.speed;
         cmd_cmd2gimbal_data.yaw_a = out.acceleration;
+        // 底盘跟随前馈：取规划器输出的轨迹速度（而不是摇杆原值），底盘与云台走同一条
+        // 加减速曲线，起步/收手时也不会一个已减速、一个还在冲
+        cmd_gimbal_yaw_rate_cmd = out.speed;
     }
 
     cmd_last_control_type = cmd_ctx.type; // 记录本拍控制源（须在读取 seed_position 之后）
@@ -342,14 +384,12 @@ static void send_chassis(void)
     float theta = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
     float c = Lib_Math_Cos(theta);
     float s = Lib_Math_Sin(theta);
-    /* 速度旋钮调速：ch8 (-1~1) 线性映射成本拍可用的平动最大速度
+    /* 平动速度旋钮调速：ch8 (-1~1) 映射成本拍可用的平动最大速度
      *   knob = -1 → chassis_translate_speed_min（慢速档）
-     *   knob =  0 → 区间中点
      *   knob = +1 → chassis_translate_speed（全速档）
      * 摇杆只决定方向与在该上限内的比例，满舵 = 该档位的最大速度。 */
-    float translate_speed = (chassis_translate_speed - chassis_translate_speed_min) *
-                                (cmd_ctx.chassis_speed_channel + 1.0f) * 0.5f +
-                            chassis_translate_speed_min;
+    float translate_speed = knob_scale(cmd_ctx.chassis_speed_channel,
+                                       chassis_translate_speed_min, chassis_translate_speed);
     // 摇杆 → 云台指向坐标系下的速度向量 (vx 前+、vy 左+)
     float vx_stick = channel_deadzone(cmd_ctx.chassis_vx_channel) * translate_speed;
     float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * translate_speed;
@@ -357,7 +397,8 @@ static void send_chassis(void)
     gimbal2chassis_data.enabled = cmd_ctx.mode; // robot_mode_stop = 失能
     gimbal2chassis_data.vx = c * vx_stick - s * vy_stick;
     gimbal2chassis_data.vy = s * vx_stick + c * vy_stick;
-    gimbal2chassis_data.w = chassis_w_from_mode(theta);
+    // w 含云台指令角速度前馈（同拍由 send_gimbal 写入 cmd_gimbal_yaw_rate_cmd）
+    gimbal2chassis_data.w = chassis_w_from_mode(theta, cmd_gimbal_yaw_rate_cmd);
 
     CommSend(&chassis_comm, (uint8_t *)&gimbal2chassis_data);
 }
