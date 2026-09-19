@@ -27,7 +27,7 @@
 #define DRV_BMI088_USED             // BMI088 IMU 驱动
 #define DRV_DBUS_USED               // DBUS 遥控器驱动
 #define DRV_SBUS_USED               // SBUS 遥控器驱动
-#define LIB_MAHONY_USED             // Mahony 姿态解算
+#define DRVLIB_BMI088_KALMAN_USED   // BMI088 零偏标定 + 线性卡尔曼姿态（drv_bmi088 + lib_kf 联合）
 #define LIB_KF_USED                 // 通用卡尔曼滤波 (lib_kf)
 #define DRV_DJIMOTOR_BROADCAST_USED // DJI 电机驱动
 #define DRV_DMMOTOR_USED            // DM 电机驱动
