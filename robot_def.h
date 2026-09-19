@@ -21,7 +21,7 @@
 // 底盘平动，旋转速度(m/s,rad/s)
 #define chassis_translate_speed 6.0f       // 平动最大速度：速度旋钮打到最大档时，摇杆通道满量程对应的平动速度
 #define chassis_translate_speed_min 1.0f   // 平动最小速度：速度旋钮打到最小档时，摇杆通道满量程对应的平动速度
-#define chassis_gyro_rotate_speed 5.0f     // 小陀螺最大转速：旋转速度旋钮打到最大档时，gyro(小陀螺)档底盘的自转角速度
+#define chassis_gyro_rotate_speed 12.0f    // 小陀螺最大转速：旋转速度旋钮打到最大档时，gyro(小陀螺)档底盘的自转角速度
 #define chassis_gyro_rotate_speed_min 1.0f // 小陀螺最小转速：旋转速度旋钮打到最小档时的自转角速度
 #define chassis_follow_w_limit 4.0f        // normal/hole 档跟随 w（比例项+前馈之和）的限幅
 
