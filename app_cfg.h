@@ -17,6 +17,7 @@
 #define LIB_MATH_USED               // 数学库（向量/矩阵/四元数/三角函数）
 #define LIB_MATH_TRIG_LUT_USED      // 自研查表三角函数 Lib_Math_*LUT（不定义则表不编译、接口不可用）
 #define BSP_FREERTOS_USED           // FreeRTOS 静态创建封装
+#define BSP_FREERTOS_STATUS_USED    // FreeRTOS 运行状态（钩子 + 空闲任务状态快照，调试器读 bsp_freertos_status）
 #define BSP_SPI_USED                // SPI (BMI088 / LCD)
 #define BSP_TIM_USED                // 定时器 (PWM / 编码器)
 #define BSP_USART_USED              // 串口 (SBUS / VOFA / RS485)
@@ -31,6 +32,11 @@
 #define LIB_KF_USED                 // 通用卡尔曼滤波 (lib_kf)
 #define DRV_DJIMOTOR_BROADCAST_USED // DJI 电机驱动
 #define DRV_DMMOTOR_USED            // DM 电机驱动
+#define DRVS_DMMOTOR_USED            // DM 电机驱动（drvs 纯协议版，重构中，暂未被 app 引用）
+#define DRVS_RSMOTOR_USED            // RS 电机驱动（drvs 纯协议版，重构中，暂未被 app 引用）
+#define DRVS_LKMOTOR_USED            // LK 电机驱动（drvs 纯协议版一对一，重构中，暂未被 app 引用）
+#define DRVS_DJIMOTOR_BROADCAST_USED // DJI 电机驱动（drvs 纯协议版一拖四广播，重构中，暂未被 app 引用）
+#define DRVS_LKMOTOR_BROADCAST_USED  // LK 电机驱动（drvs 纯协议版一拖四广播，重构中，暂未被 app 引用）
 #define DRV_RSMOTOR_USED            // RS05 电机驱动（灵足时代，MIT 协议）
 #define DRV_AXIS_MIT_LITE_USED      // 单轴 MIT 关节控制
 #define DAEMON_USED                 // Daemon 看门狗
@@ -38,6 +44,7 @@
 #define DRV_TERMINAL_LITE_USED      // 串口调参终端（terminal_lite，需 TERMINAL_LITE_UART）
 #define LIB_CRC_USED                // 软件 CRC 计算（Direct/GenTable/TableCalc）
 #define LIB_CRC_TABLES_USED         // 软件 CRC 常用算法 Flash 表（lib_crc_tables.c）
+#define LIB_HAMMING_USED            // 汉明码纠错（标准 / 扩展缩短 SECDED，任意 bit 长度）
 #define DRV_COMM_USED               //
 #define LIB_FORMAT_USED             // 快速格式化（零除法整数转换，bsp_log 依赖）
 #define BSP_LOG_USED                // 日志输出

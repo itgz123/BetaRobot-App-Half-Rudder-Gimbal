@@ -34,8 +34,9 @@
 /* app 自定义协议 id（PROTO_USER 起分配；与 app_proto_demo.h 的 PROTO_DEMO 并列） */
 #define PROTO_VISUAL (PROTO_USER + 1)
 
-/* 协议开销 = 帧尾 CRC16（2B）；整帧长 = payload_size + PROTO_VISUAL_OVERHEAD */
-#define PROTO_VISUAL_OVERHEAD 2
+/* 协议开销 = 帧尾 CRC16（2B）；整帧长 = payload_size + PROTO_VISUAL_OVERHEAD(payload_size)
+ * @note 开销宏统一为函数式（COMM_DEF 传入本实例 payload 字节数）；本协议开销固定，忽略实参 */
+#define PROTO_VISUAL_OVERHEAD(payload_size) 2
 
 /* 视觉线协议 cmd_ID 常量见 app.h 的 vision_cmd_e 枚举：
  *   接收帧（视觉→板）首字节 = VISUAL_CMD_RX，发送帧（板→视觉）首字节 = VISUAL_CMD_TX */
@@ -51,7 +52,7 @@ typedef struct
  * @brief 静态定义视觉协议实例
  * @param name        实例名称
  * @param media_      media 实例（发送用，指向 CommMedia 派生实例）
- * @param payload_sz  payload 长度（编译期确定；整帧长 = payload_sz + PROTO_VISUAL_OVERHEAD）
+ * @param payload_sz  payload 长度（编译期确定；整帧长 = payload_sz + PROTO_VISUAL_OVERHEAD(payload_sz)）
  *
  * @note media_ 以指针绑定，运行时无需另传；发送缓冲由 comm 层提供（inst->tx_buff，
  *       大小由 COMM_DEF 按开销推算）。vtable 由 CommProtoVisualInit 挂接。
