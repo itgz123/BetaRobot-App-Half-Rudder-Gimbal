@@ -19,6 +19,7 @@
 #define BSP_FREERTOS_USED           // FreeRTOS 静态创建封装
 #define BSP_FREERTOS_STATUS_USED    // FreeRTOS 运行状态（钩子 + 空闲任务状态快照，调试器读 bsp_freertos_status）
 #define BSP_SPI_USED                // SPI (BMI088 / LCD)
+#define BSP_I2C_USED                // I2C (IST8310)
 #define BSP_TIM_USED                // 定时器 (PWM / 编码器)
 #define BSP_USART_USED              // 串口 (SBUS / VOFA / RS485)
 #define BSP_CAN_USED                // CAN (FDCAN / BXCAN, DJI 电机)
@@ -26,6 +27,7 @@
 #define LIB_PID_USED                // PID 控制器
 #define LIB_MIT_USED                // MIT PD 控制器
 #define DRV_BMI088_USED             // BMI088 IMU 驱动
+#define DRV_IST8310_USED            // IST8310 三轴磁力计驱动（I2C）
 #define DRV_DBUS_USED               // DBUS 遥控器驱动
 #define DRV_SBUS_USED               // SBUS 遥控器驱动
 #define DRVLIB_BMI088_KALMAN_USED   // BMI088 零偏标定 + 线性卡尔曼姿态（drv_bmi088 + lib_kf 联合）
