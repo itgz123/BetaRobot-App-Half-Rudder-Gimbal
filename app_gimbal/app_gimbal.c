@@ -11,138 +11,6 @@
 #include "drvlib_bmi088_kalman.h"
 //
 #include "bsp_sys_status.h"
-//
-#include "bsp_log.h"
-#include "bsp_dwt.h"
-#include "drv_ist8310.h"
-
-/* ═══════════════ IST8310 磁力计 bring-up 测试（临时，验完整块删掉） ═══════════════
- *
- * 目的：只做一件事 —— 确认 bsp_i2c + drv_ist8310 的读取链路能拿到合理地磁。
- * 当前配置是 IST8310_MODE_POLLING + I2C_DMA_MODE：采样仍由任务轮询驱动（不碰 DRDY 中断），
- * 但每笔 I2C 走 DMA，传输期间 CPU 空闲。**调用方看到的接口完全没变** ——
- * IST8310ReadBlocking 依旧是"调完就拿到新数据"，异步等待被封在驱动内部。
- *
- * 两个必须知道的点：
- *
- * 1) **`IST8310Config` 不能放在 AppGimbalInit 里。**
- *    `function_in_main_c()` 用 `__disable_irq()` 把整个初始化段包住了，而 HAL 的
- *    阻塞式 I2C 用 `HAL_GetTick()` 计时。以 F4 的 `I2C_WaitOnFlagUntilTimeout` 为例：
- *        while (flag == Status) { if ((HAL_GetTick() - Tickstart) > Timeout) {...} }
- *    中断关着时 tick 不前进，那个 if 永远不成立 —— 只要标志一直不来就是**死循环**。
- *    而 `HAL_I2C_Mem_Read` 一进来就在等 BUSY 清零：SDA/SCL 接反、器件没供电、
- *    上一笔传输被中途打断，都会让总线停在 BUSY，启动阶段直接卡死、连日志都出不来。
- *    所以这里把 Config 推迟到第一次任务调用时做（那时中断已开、超时正常生效，
- *    出错会规规矩矩返回 -1 并走恢复链）。`IST8310Register` 只做实例登记、不碰硬件，
- *    放 Init 里是安全的。
- *
- * 2) **本测试会拖慢云台任务，所以做了分频。**
- *    一次阻塞读 ≈ 测量延时 6ms + 一次 I2C 往返，而云台任务周期只有 2ms，
- *    每个周期都读必然触发 APP_TASK_DEF 的 DELAY 上报。按 IST8310_TEST_DIV 分频到
- *    100ms 一帧；验证时电机是停的，这点抖动无所谓。
- *
- * 看结果：本板 app_cfg.h 里 `LOG_UART` 是注释掉的，BSPLOG 被编成空宏 ——
- * 所以现在**只能靠调试器看下面的全局变量**（launch.json 的 live watch 里加
- * g_ist8310_test_*）。把 LOG_UART 打开后日志也会一起出来。
- */
-#ifdef DRV_IST8310_USED
-
-/* 本模块日志实例（app.c 的 g_app_log 是 static，这里另开一个）。
- * 放在守卫里：眼下只有本测试块用日志，开关关掉后留着它会变成未使用变量 */
-LOG_INSTANCE_DEF(g_gimbal_log, "gimbal", 20);
-
-IST8310_INSTANCE_DEF(ist8310);
-
-#define IST8310_TEST_DIV 50        // 每 50 个任务周期读一帧 = 50 × 2ms = 100ms
-#define IST8310_TEST_TIMEOUT_MS 10 // 单笔 I2C 超时(ms)
-
-/* 非 static：供调试器直接观察。本板日志被编掉时**这里是唯一的诊断口**，
- * 所以状态特意分成了三态 —— 光看"读数为 0"分不清是没初始化还是初始化失败 */
-IST8310_Data_t g_ist8310_test_data; // 最近一次成功的读数 (µT)
-uint32_t g_ist8310_test_ok = 0;     // 累计成功帧数
-uint32_t g_ist8310_test_fail = 0;   // 累计失败次数
-uint32_t g_ist8310_test_us = 0;     // 最近一次阻塞读耗时 (µs)
-/* Config 状态：0 = 还没做；1 = 成功（已开始采样）；2 = 失败（不再重试，查接线/供电/上拉） */
-volatile uint8_t g_ist8310_test_state = 0;
-
-static const IST8310_Config_s s_ist8310_test_cfg = {
-    .i2c_e = I2C_IST8310, // DJI_C: I2C3 (PA8=SCL / PC9=SDA)
-    /* 轮询模式用不到 DRDY。这里填哨兵值表示"未接"：驱动会跳过该 GPIO 的配置，
-     * 不会白占一个 EXTI 槽位（将来切实测中断模式时再填 GPIO_IST8310_DRDY） */
-    .drdy_e = GPIO_NUM_MAX,
-    .rstn_e = GPIO_IST8310_RSTN, // PG6，接了就填；恢复流程会顺带脉冲它
-    .daemon_reload = 200,        // 100ms 一帧，留 2 倍余量（daemon 任务 1ms 减一次）
-    .daemon_fault = DAEMON_FAULT_NONE,
-    .work_mode = IST8310_MODE_POLLING,
-    /* 传输走 DMA（CubeMX 侧 I2C3 的 TX/RX DMA 已配好，DMA1_Stream2/Stream4 中断已使能）。
-     * 本板 app_cfg.h 里 LOG_UART 是注释掉的，DMA 链路的问题不会出现在日志里 ——
-     * 只能靠 g_ist8310_test_* 那几个全局变量看：读数为真但 g_ist8310_test_us 明显变大，
-     * 或 g_ist8310_test_fail 开始涨，都是 DMA 没跑起来的征兆（超时会走到驱动的
-     * "Async xfer timeout" 分支，计时用的是 i2c_timeout_ms） */
-    .i2c_mode = I2C_DMA_MODE,
-    .avg = IST8310_AVG_16,               // 手册推荐的低噪声设置（两次测量最小间隔 6ms）
-    .pd_pulse = IST8310_PD_PULSE_NORMAL, // 手册 §3.1.1：初始配置必须写 0xC0
-    /* 轮询模式没有 DRDY 中断，极性只决定写进 CNTL2 的 DRP 位。
-     * ⚠ PG3 的 EXTI 配的是上升沿触发，将来真的切中断模式时这里必须是 ACTIVE_HIGH */
-    .drdy_polarity = IST8310_DRDY_ACTIVE_HIGH,
-    .i2c_timeout_ms = IST8310_TEST_TIMEOUT_MS,
-};
-
-/**
- * @brief IST8310 阻塞读测试（任务上下文，每 IST8310_TEST_DIV 个周期跑一次）
- */
-static void IST8310_TestPolling(void)
-{
-    /* 首次调用：做 Config（含 POR 等待与阻塞 I2C，约 100ms+，会触发一次 DELAY 上报） */
-    if (g_ist8310_test_state == 0)
-    {
-        if (IST8310Config(&ist8310, &s_ist8310_test_cfg) != 0)
-        {
-            g_ist8310_test_state = 2; // 失败就不反复重试了，避免每 2ms 刷一次日志
-            BSPLOG(&g_gimbal_log, LOG_LEVEL_ERROR, "IST8310 config failed, check wiring/power");
-            return;
-        }
-        g_ist8310_test_state = 1;
-        BSPLOG(&g_gimbal_log, LOG_LEVEL_INFO, "IST8310 config ok (polling + dma, avg=16)");
-        return;
-    }
-    if (g_ist8310_test_state == 2)
-    {
-        return; // 已放弃
-    }
-
-    static uint32_t div = 0;
-    if (++div < IST8310_TEST_DIV)
-    {
-        return;
-    }
-    div = 0;
-
-    uint64_t t0 = DWT_GetTimeUs();
-    IST8310_Data_t data = IST8310ReadBlocking(&ist8310);
-    g_ist8310_test_us = (uint32_t)(DWT_GetTimeUs() - t0);
-
-    /* 约定的失败表示：time_stamp == 0（见 drv_ist8310.h 的返回值说明） */
-    if (data.time_stamp == 0)
-    {
-        g_ist8310_test_fail++;
-        BSPLOG(&g_gimbal_log, LOG_LEVEL_WARNING, "IST8310 read fail (online=%d, fail=%d)",
-               (int)IST8310IsOnline(&ist8310), (int)g_ist8310_test_fail);
-        return;
-    }
-
-    g_ist8310_test_data = data;
-    g_ist8310_test_ok++;
-
-    /* 判断依据：地磁总场约 25~65 µT（水平分量 20~50 µT），三轴合成后落在几十 µT 量级；
-     * 拿块磁铁靠近，读数应显著变大、移开后回去。全 0 或恒定的怪值说明链路有问题。
-     * 日志不支持 %f（lib_format 明确不支持），故打印 ×10 的整数，即 0.1µT 单位 */
-    BSPLOG(&g_gimbal_log, LOG_LEVEL_INFO, "IST8310 x=%d y=%d z=%d (0.1uT) dt=%dus",
-           (int)(data.mag[0] * 10.0f), (int)(data.mag[1] * 10.0f), (int)(data.mag[2] * 10.0f),
-           (int)g_ist8310_test_us);
-}
-
-#endif /* DRV_IST8310_USED */
 
 // 实例
 DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
@@ -438,11 +306,6 @@ void AppGimbalInit(void)
 
     };
     BSP_ASSERT_APP_CALL(BMI088KalmanConfig(&bmi088, &bmi088_cfg));
-
-#ifdef DRV_IST8310_USED
-    /* 只注册（纯实例登记、不碰硬件）；真正的 Config 推迟到任务里做，原因见文件顶部 */
-    BSP_ASSERT_APP_CALL(IST8310Register(&ist8310));
-#endif
 }
 
 ITCM_RAM void AppGimbalRun(void)
@@ -580,8 +443,4 @@ ITCM_RAM void AppGimbalRun(void)
         .yaw_motor_vel = yaw_mdata.speed,
     };
     xQueueOverwrite(gimbal2cmd_queue_handle, &gimbal2cmd_data);
-
-#ifdef DRV_IST8310_USED
-    IST8310_TestPolling(); // 临时：IST8310 阻塞读 bring-up 测试
-#endif
 }
