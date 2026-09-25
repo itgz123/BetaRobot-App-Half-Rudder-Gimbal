@@ -271,7 +271,8 @@ void AppGimbalInit(void)
              * 反而把 250Hz 以上的噪声折返进来；1000Hz 配 116Hz 带宽噪声更低 */
             .gyro_conf = BMI088_GYRO_CONF_1000_116,
             .work_mode = BMI088_MODE_INT,
-            .spi_timeout_ms = 10, // SPI IT/DMA 传输超时(ms)
+            .spi_mode = BSP_DMA_MODE, // 传输方式：DRDY EXTI 里发起，只能用 IT/DMA（INT + BLOCK 被 Config 拒绝）
+            .spi_timeout_ms = 10,     // SPI 传输超时(ms)：BLOCK 透传 HAL，IT/DMA 用于等总线就绪
         },
 
         /* ---- 标定参数：写死进固件的常量 ---- */
