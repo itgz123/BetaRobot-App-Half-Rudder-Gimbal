@@ -43,15 +43,16 @@ BMI088_KALMAN_INSTANCE_DEF(bmi088);
  *   0.06 °/s —— 这组值在室温下未必还准，重标时至少把陀螺零偏重测一遍；
  *   全温区的温漂斜率补进 .gyro.bias_tempco、测量的参考温度填进 temp_ref。 */
 static const BMI088_Calib_s s_bmi088_calib = {
-    .gyro = {
-        /* 2026-09-19 重标：38.2℃ 静止 118.3s@500Hz，脚本
-         * drvlib/drvlib_bmi088_calib/bmi088_calib.py（残差法：旧值 + 录到的残差）。
-         * 标定前 yaw 漂移 0.0088°/s，残差 z 与它逐位对上，标后应≈0。
-         * ⚠ 换 IMU / 拆装 / 改安装方式必须重标重烧；温漂未标（本次温差只有 1℃） */
-        .bias = {0.002347f, 0.000987f, 0.001846f},
-        // .bias_tempco = {...}, .temp_ref = 25.0f,   // 自热扫温标定后填
-        // .scale = {...}, .misalign = {...},         // yaw 轴自转标定后填
-    },
+    .gyro =
+        {
+            /* 2026-09-19 重标：38.2℃ 静止 118.3s@500Hz，脚本
+             * drvlib/drvlib_bmi088_calib/bmi088_calib.py（残差法：旧值 + 录到的残差）。
+             * 标定前 yaw 漂移 0.0088°/s，残差 z 与它逐位对上，标后应≈0。
+             * ⚠ 换 IMU / 拆装 / 改安装方式必须重标重烧；温漂未标（本次温差只有 1℃） */
+            .bias = {0.002347f, 0.000987f, 0.001846f},
+            // .bias_tempco = {...}, .temp_ref = 25.0f,   // 自热扫温标定后填
+            // .scale = {...}, .misalign = {...},         // yaw 轴自转标定后填
+        },
     // .acc = { .bias = {...}, .scale = {...}, .misalign = {...} },  // 六位置标定后填
 };
 
@@ -73,22 +74,23 @@ void AppGimbalInit(void)
     // 配置下pitch
     DMMotor_Config_s pitchdown_cfg = {
         .can_e = CAN_2,
-        .controller_setting = {
-            .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
-            .feedback_direction = MOTOR_DIRECTION_NORMAL,          // 电机方向
-            .motor_direction = MOTOR_DIRECTION_NORMAL,             // 反馈方向
-            .position_mode = MOTOR_POSITION_LIMITED,               // 位置模式
-            .angle_limit_max = 0,                                  // LIMITED: 限幅上限, WRAP: 归一化上限
-            .angle_limit_min = 0,                                  // LIMITED: 限幅下限, WRAP: 归一化下限
-            .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
-            .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
-            .speed_feedforward_ptr = NULL,                         // 速度前馈指针
-            .position_feedforward_ptr = NULL,                      // 位置前馈指针
-            .angle_src = MOTOR_FEEDBACK_MOTOR,                     // 角度反馈来源
-            .speed_src = MOTOR_FEEDBACK_MOTOR,                     // 速度反馈来源
-            .angle_external_ptr = NULL,                            // 外部角度反馈指针
-            .speed_external_ptr = NULL,                            // 外部速度反馈指针
-        },
+        .controller_setting =
+            {
+                .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
+                .feedback_direction = MOTOR_DIRECTION_NORMAL,          // 电机方向
+                .motor_direction = MOTOR_DIRECTION_NORMAL,             // 反馈方向
+                .position_mode = MOTOR_POSITION_LIMITED,               // 位置模式
+                .angle_limit_max = 0,                                  // LIMITED: 限幅上限, WRAP: 归一化上限
+                .angle_limit_min = 0,                                  // LIMITED: 限幅下限, WRAP: 归一化下限
+                .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
+                .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
+                .speed_feedforward_ptr = NULL,                         // 速度前馈指针
+                .position_feedforward_ptr = NULL,                      // 位置前馈指针
+                .angle_src = MOTOR_FEEDBACK_MOTOR,                     // 角度反馈来源
+                .speed_src = MOTOR_FEEDBACK_MOTOR,                     // 速度反馈来源
+                .angle_external_ptr = NULL,                            // 外部角度反馈指针
+                .speed_external_ptr = NULL,                            // 外部速度反馈指针
+            },
         .model = DM_MODEL_DM4310,
         .can_id = 0x001,
         .master_id = 0x011,
@@ -108,22 +110,23 @@ void AppGimbalInit(void)
     // 配置上pitch
     DMMotor_Config_s pitchup_cfg = {
         .can_e = CAN_2,
-        .controller_setting = {
-            .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
-            .feedback_direction = MOTOR_DIRECTION_NORMAL,          // 电机方向
-            .motor_direction = MOTOR_DIRECTION_NORMAL,             // 反馈方向
-            .position_mode = MOTOR_POSITION_LIMITED,               // 位置模式
-            .angle_limit_max = 0,                                  // LIMITED: 限幅上限, WRAP: 归一化上限
-            .angle_limit_min = 0,                                  // LIMITED: 限幅下限, WRAP: 归一化下限
-            .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
-            .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
-            .speed_feedforward_ptr = NULL,                         // 速度前馈指针
-            .position_feedforward_ptr = NULL,                      // 位置前馈指针
-            .angle_src = MOTOR_FEEDBACK_MOTOR,                     // 角度反馈来源
-            .speed_src = MOTOR_FEEDBACK_MOTOR,                     // 速度反馈来源
-            .angle_external_ptr = NULL,                            // 外部角度反馈指针
-            .speed_external_ptr = NULL,                            // 外部速度反馈指针
-        },
+        .controller_setting =
+            {
+                .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
+                .feedback_direction = MOTOR_DIRECTION_NORMAL,          // 电机方向
+                .motor_direction = MOTOR_DIRECTION_NORMAL,             // 反馈方向
+                .position_mode = MOTOR_POSITION_LIMITED,               // 位置模式
+                .angle_limit_max = 0,                                  // LIMITED: 限幅上限, WRAP: 归一化上限
+                .angle_limit_min = 0,                                  // LIMITED: 限幅下限, WRAP: 归一化下限
+                .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
+                .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
+                .speed_feedforward_ptr = NULL,                         // 速度前馈指针
+                .position_feedforward_ptr = NULL,                      // 位置前馈指针
+                .angle_src = MOTOR_FEEDBACK_MOTOR,                     // 角度反馈来源
+                .speed_src = MOTOR_FEEDBACK_MOTOR,                     // 速度反馈来源
+                .angle_external_ptr = NULL,                            // 外部角度反馈指针
+                .speed_external_ptr = NULL,                            // 外部速度反馈指针
+            },
         .model = DM_MODEL_DM4310,
         .can_id = 0x002,
         .master_id = 0x012,
@@ -143,22 +146,23 @@ void AppGimbalInit(void)
     // 配置yaw（RS05，量程需与灵足上位机一致：位置±12.57rad/速度±50rad/s/力矩±5.5Nm）
     RSMotor_Config_s yaw_cfg = {
         .can_e = CAN_1,
-        .controller_setting = {
-            .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
-            .feedback_direction = MOTOR_DIRECTION_REVERSE,         // 反馈方向：镜像后 逆时针→正角度（原编码器逆时针为负）
-            .motor_direction = MOTOR_DIRECTION_REVERSE,            // 输出方向：镜像后 正力矩→逆时针（与反馈同步翻，闭环稳定）
-            .position_mode = MOTOR_POSITION_WRAP,                  // 位置模式（yaw无限旋转用环绕）
-            .angle_limit_max = M_PI,                               // WRAP: 归一化上限
-            .angle_limit_min = -M_PI,                              // WRAP: 归一化下限
-            .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
-            .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
-            .speed_feedforward_ptr = NULL,                         // 速度前馈指针
-            .position_feedforward_ptr = NULL,                      // 位置前馈指针
-            .angle_src = MOTOR_FEEDBACK_MOTOR,                     // 角度反馈来源
-            .speed_src = MOTOR_FEEDBACK_MOTOR,                     // 速度反馈来源
-            .angle_external_ptr = NULL,                            // 外部角度反馈指针
-            .speed_external_ptr = NULL,                            // 外部速度反馈指针
-        },
+        .controller_setting =
+            {
+                .loop_type = MOTOR_LOOP_OPEN,                  // 控制模式
+                .feedback_direction = MOTOR_DIRECTION_REVERSE, // 反馈方向：镜像后 逆时针→正角度（原编码器逆时针为负）
+                .motor_direction = MOTOR_DIRECTION_REVERSE, // 输出方向：镜像后 正力矩→逆时针（与反馈同步翻，闭环稳定）
+                .position_mode = MOTOR_POSITION_WRAP,       // 位置模式（yaw无限旋转用环绕）
+                .angle_limit_max = M_PI,                    // WRAP: 归一化上限
+                .angle_limit_min = -M_PI,                   // WRAP: 归一化下限
+                .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
+                .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
+                .speed_feedforward_ptr = NULL,                         // 速度前馈指针
+                .position_feedforward_ptr = NULL,                      // 位置前馈指针
+                .angle_src = MOTOR_FEEDBACK_MOTOR,                     // 角度反馈来源
+                .speed_src = MOTOR_FEEDBACK_MOTOR,                     // 速度反馈来源
+                .angle_external_ptr = NULL,                            // 外部角度反馈指针
+                .speed_external_ptr = NULL,                            // 外部速度反馈指针
+            },
         .model = RS_MODEL_RS05,
         .can_id = 0x01,
         .master_id = 0xfd,
@@ -182,31 +186,35 @@ void AppGimbalInit(void)
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        .params = {
-            .gravity = 0.30f, // 重力前馈系数（标定 0.28→0.30）
-            .gear_ratio = 1,
-            .inertia = 0.008f, // kg·m²（标定 0.012→0.008，前馈过大导致振幅放大）
-            .friction_coulomb_pos = 0.0f,
-            .friction_coulomb_neg = 0.0f,
-            .friction_viscous_pos = 0.0f,
-            .friction_viscous_neg = 0.0f,
-        }, // 轴参数
-        .sine_params = {
-            .amplitude = 0.2,
-            .freq = 2,
-        }, // 正弦参数
-        .chirp_params = {
-            .amplitude_start = 0.1,
-            .amplitude_end = 3,
-            .duration = 15,
-            .start_freq = 1,
-            .end_freq = 8,
-        }, // 扫频参数
-        .multi_sine_params = {
-            .amplitude = 0.1,
-            .duration = 1,
-            .num_freqs = 10,
-        },         // 多正弦叠加参数
+        .params =
+            {
+                .gravity = 0.30f, // 重力前馈系数（标定 0.28→0.30）
+                .gear_ratio = 1,
+                .inertia = 0.008f, // kg·m²（标定 0.012→0.008，前馈过大导致振幅放大）
+                .friction_coulomb_pos = 0.0f,
+                .friction_coulomb_neg = 0.0f,
+                .friction_viscous_pos = 0.0f,
+                .friction_viscous_neg = 0.0f,
+            }, // 轴参数
+        .sine_params =
+            {
+                .amplitude = 0.2,
+                .freq = 2,
+            }, // 正弦参数
+        .chirp_params =
+            {
+                .amplitude_start = 0.1,
+                .amplitude_end = 3,
+                .duration = 15,
+                .start_freq = 1,
+                .end_freq = 8,
+            }, // 扫频参数
+        .multi_sine_params =
+            {
+                .amplitude = 0.1,
+                .duration = 1,
+                .num_freqs = 10,
+            },     // 多正弦叠加参数
         .kp = 4,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
         .kd = 0.4, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
@@ -216,31 +224,35 @@ void AppGimbalInit(void)
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
         // .vofa_enable = 1,                // 该轴写 VOFA 12 通道调试（多轴实例仅一个置 1）
-        .params = {
-            .gravity = 0.0f,
-            .gear_ratio = 1,
-            .inertia = 0.0095f,
-            .friction_coulomb_pos = 0.0f,
-            .friction_coulomb_neg = 0.0f,
-            .friction_viscous_pos = 0.0f,
-            .friction_viscous_neg = 0.0f,
-        }, // 轴参数
-        .sine_params = {
-            .amplitude = 0.4,
-            .freq = 2,
-        }, // 正弦参数
-        .chirp_params = {
-            .amplitude_start = 0.1,
-            .amplitude_end = 3,
-            .duration = 15,
-            .start_freq = 1,
-            .end_freq = 8,
-        }, // 扫频参数
-        .multi_sine_params = {
-            .amplitude = 0.1,
-            .duration = 1,
-            .num_freqs = 10,
-        },         // 多正弦叠加参数
+        .params =
+            {
+                .gravity = 0.0f,
+                .gear_ratio = 1,
+                .inertia = 0.0095f,
+                .friction_coulomb_pos = 0.0f,
+                .friction_coulomb_neg = 0.0f,
+                .friction_viscous_pos = 0.0f,
+                .friction_viscous_neg = 0.0f,
+            }, // 轴参数
+        .sine_params =
+            {
+                .amplitude = 0.4,
+                .freq = 2,
+            }, // 正弦参数
+        .chirp_params =
+            {
+                .amplitude_start = 0.1,
+                .amplitude_end = 3,
+                .duration = 15,
+                .start_freq = 1,
+                .end_freq = 8,
+            }, // 扫频参数
+        .multi_sine_params =
+            {
+                .amplitude = 0.1,
+                .duration = 1,
+                .num_freqs = 10,
+            },     // 多正弦叠加参数
         .kp = 1,   // 位置增益
         .kd = 0.1, // 速度增益
         // yaw 是 WRAP 环绕轴（±π 归一化）：误差需取最短路径，否则边界处跳变
@@ -255,25 +267,26 @@ void AppGimbalInit(void)
     /* 配置 BMI088 + 卡尔曼（标定参数见上面的 s_bmi088_calib）
      * 噪声参数取值的依据见 drvlib_bmi088_kalman.h 头注释与下面的注释 */
     BMI088Kalman_Config_s bmi088_cfg = {
-        .imu = {
-            .spi_e = SPI_BMI088,
-            .cs_acc_e = GPIO_BMI088_CS_ACCEL,
-            .cs_gyro_e = GPIO_BMI088_CS_GYRO,
-            .int_acc_e = GPIO_BMI088_INT_ACCEL,
-            .int_gyro_e = GPIO_BMI088_INT_GYRO,
-            .daemon_reload = 20,
-            .daemon_fault = DAEMON_FAULT_NONE,
-            .acc_range = BMI088_ACC_RANGE_3G,     // ±3g，云台不会有大加速度，取最小量程换分辨率
-            .acc_bwp = BMI088_ACC_BWP_NORMAL,     // 正常带宽（ODR>400Hz 才必须切 OSR 模式）
-            .acc_odr = BMI088_ACC_ODR_400,        // 400Hz：只做低频倾角校正，够用
-            .gyro_range = BMI088_GYRO_RANGE_2000, // ±2000dps，留余量避免大机动削顶
-            /* ODR=1000Hz/BW=116Hz：任务周期 2ms(500Hz)，2000Hz 的采样用不上，
-             * 反而把 250Hz 以上的噪声折返进来；1000Hz 配 116Hz 带宽噪声更低 */
-            .gyro_conf = BMI088_GYRO_CONF_1000_116,
-            .work_mode = BMI088_MODE_INT,
-            .spi_mode = BSP_DMA_MODE, // 传输方式：DRDY EXTI 里发起，只能用 IT/DMA（INT + BLOCK 被 Config 拒绝）
-            .spi_timeout_ms = 10,     // SPI 传输超时(ms)：BLOCK 透传 HAL，IT/DMA 用于等总线就绪
-        },
+        .imu =
+            {
+                .spi_e = SPI_BMI088,
+                .cs_acc_e = GPIO_BMI088_CS_ACCEL,
+                .cs_gyro_e = GPIO_BMI088_CS_GYRO,
+                .int_acc_e = GPIO_BMI088_INT_ACCEL,
+                .int_gyro_e = GPIO_BMI088_INT_GYRO,
+                .daemon_reload = 20,
+                .daemon_fault = DAEMON_FAULT_NONE,
+                .acc_range = BMI088_ACC_RANGE_3G,     // ±3g，云台不会有大加速度，取最小量程换分辨率
+                .acc_bwp = BMI088_ACC_BWP_NORMAL,     // 正常带宽（ODR>400Hz 才必须切 OSR 模式）
+                .acc_odr = BMI088_ACC_ODR_400,        // 400Hz：只做低频倾角校正，够用
+                .gyro_range = BMI088_GYRO_RANGE_2000, // ±2000dps，留余量避免大机动削顶
+                /* ODR=1000Hz/BW=116Hz：任务周期 2ms(500Hz)，2000Hz 的采样用不上，
+                 * 反而把 250Hz 以上的噪声折返进来；1000Hz 配 116Hz 带宽噪声更低 */
+                .gyro_conf = BMI088_GYRO_CONF_1000_116,
+                .work_mode = BMI088_MODE_INT,
+                .spi_mode = BSP_DMA_MODE, // 传输方式：DRDY EXTI 里发起，只能用 IT/DMA（INT + BLOCK 被 Config 拒绝）
+                .spi_timeout_ms = 10,     // SPI 传输超时(ms)：BLOCK 透传 HAL，IT/DMA 用于等总线就绪
+            },
 
         /* ---- 标定参数：写死进固件的常量 ---- */
         .calib = &s_bmi088_calib,
@@ -309,15 +322,18 @@ void AppGimbalInit(void)
     BSP_ASSERT_APP_CALL(BMI088KalmanConfig(&bmi088, &bmi088_cfg));
 }
 
-ITCM_RAM void AppGimbalRun(void)
+ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
 {
+    (void)dt;
+    (void)time_stamp;
     // 接收消息
     xQueueReceive(cmd2gimbal_queue_handle, &gimbal_cmd2gimbal_data, 0);
 
     // 计算当前状态
     MotorData_s pitchdown_mdata = MotorGetData(&(pitchdown_motor.base));
     MotorData_s pitchup_mdata = MotorGetData(&(pitchup_motor.base));
-    pitchup_mdata.position = (pitchup_motor.base.data_all.data.position - pitchup_position_0) - (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
+    pitchup_mdata.position = (pitchup_motor.base.data_all.data.position - pitchup_position_0) -
+                             (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
     MotorData_s yaw_mdata = MotorGetData(&(yaw_motor.base));
 
     // 换算为 axis lite 的反馈输入（lite 层不依赖 motor，故在 app 侧剥离 MotorData_s）

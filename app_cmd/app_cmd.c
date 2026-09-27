@@ -272,8 +272,7 @@ static float chassis_w_from_mode(float theta, float yaw_rate_cmd)
         // gyro 档底盘在定速自转、云台锁世界系航向让操作手照常瞄准：两者互不跟随，
         // 不加 yaw 前馈（否则瞄准时摇杆会叠加到自转速度上，自转不再是定值），
         // 也不吃跟随限幅——这个定值由旋转速度旋钮（ch9）缩放后恒等输出
-        return knob_scale(cmd_ctx.chassis_rotate_channel,
-                          chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
+        return knob_scale(cmd_ctx.chassis_rotate_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
     }
 
     if ((robot_mode_normal != cmd_ctx.mode) && (robot_mode_hole != cmd_ctx.mode))
@@ -310,9 +309,8 @@ static void send_gimbal(void)
      *   ② 视觉交还通道源的首拍播种一次：视觉期间 planner 被绕过、累加器停在旧值，
      *      交还时用当前反馈重新锚定。
      * 视觉接管瞬间（通道源→视觉）不播种：本拍 planner 不被调用，旧值无人消费。 */
-    uint8_t seed_position =
-        (robot_mode_stop == cmd_ctx.mode) ||
-        ((visual_control_e == cmd_last_control_type) && (visual_control_e != cmd_ctx.type));
+    uint8_t seed_position = (robot_mode_stop == cmd_ctx.mode) ||
+                            ((visual_control_e == cmd_last_control_type) && (visual_control_e != cmd_ctx.type));
 
     if (visual_control_e == cmd_ctx.type)
     {
@@ -393,8 +391,8 @@ static void send_chassis(void)
      *   knob = -1 → chassis_translate_speed_min（慢速档）
      *   knob = +1 → chassis_translate_speed（全速档）
      * 摇杆只决定方向与在该上限内的比例，满舵 = 该档位的最大速度。 */
-    float translate_speed = knob_scale(cmd_ctx.chassis_speed_channel,
-                                       chassis_translate_speed_min, chassis_translate_speed);
+    float translate_speed =
+        knob_scale(cmd_ctx.chassis_speed_channel, chassis_translate_speed_min, chassis_translate_speed);
     // 摇杆 → 云台指向坐标系下的速度向量 (vx 前+、vy 左+)
     float vx_stick = channel_deadzone(cmd_ctx.chassis_vx_channel) * translate_speed;
     float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * translate_speed;
@@ -461,11 +459,12 @@ void AppCmdInit(void)
         .daemon_fault = DAEMON_FAULT_NONE,
         .lost_timeout_ms = 1000,
         // 通道原始值范围（SBUS 协议标准值，换遥控器/重新校准时改这里）
-        .ch_range = {
-            .ch_min = FS_SBUS_CH_MIN,
-            .ch_max = FS_SBUS_CH_MAX,
-            .ch_center = FS_SBUS_CH_CENTER,
-        },
+        .ch_range =
+            {
+                .ch_min = FS_SBUS_CH_MIN,
+                .ch_max = FS_SBUS_CH_MAX,
+                .ch_center = FS_SBUS_CH_CENTER,
+            },
     };
     BSP_ASSERT_APP_CALL(SBUSConfig(&sbus_inst, &sbus_cfg));
 
@@ -527,8 +526,10 @@ void AppCmdInit(void)
     BSP_ASSERT_APP_CALL(CommConfig(&chassis_comm, &chassis_comm_cfg));
 }
 
-ITCM_RAM void AppCmdRun(void)
+ITCM_RAM void AppCmdRun(float dt, uint64_t time_stamp)
 {
+    (void)dt;
+    (void)time_stamp;
     // 1. 收集反馈
     xQueueReceive(gimbal2cmd_queue_handle, &cmd_gimbal2cmd_data, 0);
     xQueueReceive(shoot2cmd_queue_handle, &cmd_shoot2cmd_data, 0);
