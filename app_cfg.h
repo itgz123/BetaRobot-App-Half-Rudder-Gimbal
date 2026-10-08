@@ -30,7 +30,6 @@
 #define DRV_SBUS_USED                // SBUS 遥控器驱动
 #define LIB_LKF_USED                 // 通用卡尔曼滤波 (lib_lkf)
 #define DRVLIB_BMI088_KALMAN_USED    // BMI088 零偏标定 + 线性卡尔曼姿态（drv_bmi088 + lib_lkf 联合）
-#define DRV_DJIMOTOR_BROADCAST_USED  // DJI 电机驱动
 #define DRV_DMMOTOR_USED             // DM 电机驱动
 #define DRVS_DMMOTOR_USED            // DM 电机驱动（drvs 纯协议版，重构中，暂未被 app 引用）
 #define DRVS_RSMOTOR_USED            // RS 电机驱动（drvs 纯协议版，重构中，暂未被 app 引用）
@@ -38,6 +37,7 @@
 #define DRVS_DJIMOTOR_BROADCAST_USED // DJI 电机驱动（drvs 纯协议版一拖四广播，重构中，暂未被 app 引用）
 #define DRVS_LKMOTOR_BROADCAST_USED  // LK 电机驱动（drvs 纯协议版一拖四广播，重构中，暂未被 app 引用）
 #define DRV_RSMOTOR_USED             // RS05 电机驱动（灵足时代，MIT 协议）
+#define DRVLIB_MOTOR_USED            // 三级级联 PID + 反馈后处理（drvs 之上，app_shoot 摩擦轮已接入）
 #define DRV_AXIS_MIT_LITE_USED       // 单轴 MIT 关节控制
 #define DAEMON_USED                  // Daemon 看门狗
 #define VOFA_USED                    // VOFA+ JustFloat 遥测
@@ -46,8 +46,15 @@
 #define LIB_CRC_TABLES_USED          // 软件 CRC 常用算法 Flash 表（lib_crc_tables.c）
 #define LIB_HAMMING_USED             // 汉明码纠错（标准 / 扩展缩短 SECDED，任意 bit 长度）
 #define DRV_COMM_USED                //
-#define LIB_FORMAT_USED              // 快速格式化（零除法整数转换，bsp_log 依赖）
-#define BSP_LOG_USED                 // 日志输出
+#define DRV_REFEREE2026_USED         // 2026 赛季裁判系统（未接入 app；串口/robot_id 在 Referee2026Config 里传）
+/* 裁判系统三条链路各编各的（一实例一链路）：**定义 = 编进来，不定义 = 整对文件编成空 TU**，
+ * 命令码枚举/快照槽/分发表/0xA9 遥控解析一起消失（省 Flash/RAM，也断了误用的可能）。
+ * 本车两条：常规链路（比赛信息/性能体系/交互 0x0301）与图传链路（UART_1 接图传发送端）。
+ * 雷达无线链路只有雷达车需要，本车**不定义它**（见 drv/drv_referee2026/readme.md §2.5）。 */
+#define REFEREE2026_LINK_COMMON_USED
+#define REFEREE2026_LINK_VIDEO_USED
+#define LIB_FORMAT_USED // 快速格式化（零除法整数转换，bsp_log 依赖）
+#define BSP_LOG_USED    // 日志输出
 //
 /* TODO 加热器已从 drv_bmi088 移出、不再参与编译（IMU 不加热 → 不存在热坏风险）。
  *      后续独立为 drv_heater：温度取自 BMI088GetTemperature，控温由 app 任务驱动，
@@ -66,9 +73,9 @@
 #define LOG_UART UART_7
 #define TERMINAL_LITE_UART UART_10 // terminal_lite 调参串口（空闲且 RX/TX DMA 已配）
 #elif DEVELOPMENT_BOARD == DJI_C   // UART_1:4pin,UART_6:3pin
-// #define VOFA_UART UART_6
-#define LOG_UART UART_6
-// #define TERMINAL_LITE_UART UART_1 // 若需用 terminal 调参，取消注释（需接 USB-TTL）
+#define VOFA_UART UART_6
+// #define LOG_UART UART_6
+// #define TERMINAL_LITE_UART UART_1 // 若需用 terminal 调参，取消注释（需接 USB-TTL；与裁判系统互斥）
 #elif DEVELOPMENT_BOARD == DJI_A
 // #define VOFA_UART
 // #define LOG_UART
