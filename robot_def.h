@@ -70,6 +70,28 @@
  * 未标定时填 0：退化为"编码器零位即对正"。 */
 #define chassis_gimbal_offset DEG_TO_RAD(-30.0f)
 
+/* 拨弹机构机械参数
+ * 拨盘一圈 12 个孔，相邻两孔夹角 360/12 = 30°，每转过 30° 送出一颗弹；
+ * 电机与拨盘减速比 25.6（电机转 25.6 圈，拨盘转 1 圈），故每发一颗电机需转过
+ *     TRIGGER_STEP_RAD = 2π × 25.6 / 12 ≈ 13.404 rad（2.133 圈）
+ * 该值是纯机械量，实车换拨盘/减速箱后只改这里；速度/加速度/电流等控制参数仍在 app_shoot.c。*/
+#define TRIGGER_PADDLE_HOLES 12                                                    // 拨盘一圈孔数（= 一圈的弹数）
+#define TRIGGER_GEAR_RATIO 25.6f                                                   // 电机:拨盘 减速比
+#define TRIGGER_STEP_RAD (2.0f * M_PI * TRIGGER_GEAR_RATIO / TRIGGER_PADDLE_HOLES) // 每发一颗电机转角 (rad)
+
+/* 摩擦轮机械参数与弹速上限
+ * 摩擦轮直径 5cm（半径 2.5cm），弹丸出口速度 ≈ 摩擦轮线速度：v = ω·r。
+ * 规则弹丸速度上限 25 m/s，实际留余量取 22 m/s（约 12% 余量，覆盖弹丸批次差异与
+ * 摩擦轮磨损/打滑）。22 m/s 对应摩擦轮 880 rad/s（≈8400 rpm）：若摩擦轮与电机
+ * 反馈轴之间还有减速，把 FRICTION_REDUCTION 填成该传动比（电机:摩擦轮 = n:1 时
+ * ω_电机 = n·v/r）；摩擦轮直接装在反馈轴上则填 1。
+ * ch9 调试旋钮 -1~1 映射到 0~BULLET_SPEED_MAX (m/s)，换算在 app_shoot.c。 */
+#define FRICTION_WHEEL_DIAMETER 0.05f                          // 摩擦轮直径 (m)
+#define FRICTION_WHEEL_RADIUS (FRICTION_WHEEL_DIAMETER * 0.5f) // 摩擦轮半径 (m) = 0.025
+#define FRICTION_REDUCTION 1.0f                                // 电机反馈轴:摩擦轮 传动比（直驱 = 1）
+#define BULLET_SPEED_RULE_MAX 25.0f                            // 规则弹丸速度上限 (m/s)
+#define BULLET_SPEED_MAX 22.0f                                 // 实际使用弹速上限 (m/s)，ch9 映射上限
+
 // 我们的flysky遥控参数
 #define FS_SBUS_CH_MIN 240
 #define FS_SBUS_CH_MAX 1807

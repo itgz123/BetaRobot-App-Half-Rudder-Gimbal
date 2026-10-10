@@ -25,6 +25,8 @@
 #define BSP_CAN_LIST_LUT_USED        // CAN 接收中断标准ID LIST模式按ID查表加速（不定义则回退循环判断）
 #define LIB_PID_USED                 // PID 控制器
 #define LIB_MIT_USED                 // MIT PD 控制器
+#define LIB_TRAJ_USED                // 单轴梯形轨迹规划（库保留；app_shoot 的拨弹位置环当前未接入）
+#define LIB_FSM_TABLE_USED           // 表驱动状态机（app_shoot 拨弹状态机）
 #define DRV_BMI088_USED              // BMI088 IMU 驱动
 #define DRV_DBUS_USED                // DBUS 遥控器驱动
 #define DRV_SBUS_USED                // SBUS 遥控器驱动

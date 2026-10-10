@@ -1,6 +1,7 @@
 #include "app_gimbal.h"
 #include "app_cfg.h"
 #include "app.h"
+#include "app_cmd_gimbal.h" // gimbal2cmd / cmd2gimbal 队列句柄与数据结构
 #include "robot_def.h"
 //
 #include "drv_motor_base.h"
@@ -9,8 +10,11 @@
 #include "drv_vofa.h"
 #include "drv_axis_mit_lite.h"
 #include "drvlib_bmi088_kalman.h"
+#include "lib_fsm_table.h" // 表驱动状态机（云台状态机）
 //
 #include "bsp_sys_status.h"
+//
+#include <stdbool.h> // 状态机守卫
 
 // 实例
 DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
@@ -62,6 +66,126 @@ static cmd2gimbal_data_t gimbal_cmd2gimbal_data; // cmd2gimbal
 static float pitchdown_motor_setref = 0;
 static float pitchup_motor_setref = 0;
 static float yaw_motor_setref = 0;
+
+/*============================================
+ *        云台状态机（lib_fsm_table）
+ *   状态 = 机构实际姿态，不是 cmd 下发的档位：
+ *     失能 ←→ { 立起中 → 直立 } / { 倒下中 → 倒下 }
+ *   驱动量有两个：
+ *     ① cmd 下发的 robot_mode → 目标姿态：stop=失能、normal/gyro=直立、hole=倒下
+ *        （小陀螺在云台侧与普通同姿态：差异是底盘 w，由 cmd 算，云台不参与）
+ *     ② 下 pitch 位置 → 实际姿态：拿 pitchdown_position_max/min 两端点判"到位"
+ *   产出：本状态下哪几轴由 cmd 设定值驱动 ——
+ *     失能          ：三轴输出 0（电机保持使能，仍发零力矩帧）
+ *     立起中 / 直立 ：pitch 上下两轴闭环跟随 cmd 设定值（立起中就是"还没抬到位"的同一套律）
+ *     倒下中 / 倒下 ：pitch 上下两轴 0（松劲、靠机构自重下垂），yaw 继续控世界系航向
+ *   ⚠ 本轮只做状态骨架与上报，驱动律沿用旧的（直立=现有 normal 律、倒下=松劲靠自重），
+ *     没有独立的目标角闭环；到位判据（pitchdown 两端点 ± EPS）只为换状态用。真正的驱动律、
+ *     迟滞、卡死超时等定了以后再补 —— 那时两个方向的律若仍不同，拆成两个过渡态正合适。
+ *   ⚠ 自瞄(visual) 不是云台状态：云台看不见视觉，只是跟随 cmd 算好的设定值（cmd 把视觉
+ *     规划写进 pitch/yaw 的 x/v/a）。若将来自瞄要让云台本身改行为（增益/限幅/别的轴
+ *     策略），再给 robot_mode 加值或给云台单独发标志。
+ *============================================*/
+
+/* 到位判据阈值：下 pitch 距两端点的距离 (rad)。松劲倒下没有闭环，位置靠重力压在
+ * pitchdown_position_min 上；抬升靠位置环停在 pitchdown_position_max 附近。 */
+#define GIMBAL_POSTURE_EPS 0.05f
+
+typedef enum : uint8_t
+{
+    gimbal_ev_update_e = 0, // cmd 下发模式 或 机构实际姿态 变了
+} gimbal_event_e;
+
+/* 由下 pitch 位置解出的实际姿态：机构行程的两端 + 中间 */
+typedef enum : uint8_t
+{
+    gimbal_posture_unknown_e = 0, // 在两端之间（运动中）
+    gimbal_posture_stand_e = 1,   // 已抬到直立端
+    gimbal_posture_lye_e = 2,     // 已落到倒下端
+} gimbal_posture_e;
+
+typedef struct
+{
+    robot_mode mode;               // 本拍 cmd 下发的模式（目标姿态来源）
+    robot_mode mode_last;          // 上一拍模式（边沿检测）
+    gimbal_posture_e posture;      // 本拍由位置解出的实际姿态（守卫读它）
+    gimbal_posture_e posture_last; // 上一拍姿态（边沿检测）
+} GimbalFsmCtx_s;
+
+static GimbalFsmCtx_s gimbal_fsm_ctx;
+static LibFsmTableInstance_s gimbal_fsm;
+
+/*---------------- 守卫 ----------------*/
+/* 守卫必须无副作用且幂等：同 from/event 的多条规则会依次求值（见 lib_fsm_table.h）。
+ * 下面五个条件互斥，故表内先后只决定"失能优先"这一条语义。 */
+static uint8_t GimbalFsmTargetIsStand(const GimbalFsmCtx_s *c)
+{
+    return (c->mode == robot_mode_normal) || (c->mode == robot_mode_gyro);
+}
+static bool GimbalFsmGuardDisable(void *ctx, const void *event_data)
+{
+    (void)event_data;
+    return ((GimbalFsmCtx_s *)ctx)->mode == robot_mode_stop;
+}
+static bool GimbalFsmGuardNeedRise(void *ctx, const void *event_data)
+{
+    (void)event_data;
+    GimbalFsmCtx_s *c = (GimbalFsmCtx_s *)ctx;
+    return GimbalFsmTargetIsStand(c) && (c->posture != gimbal_posture_stand_e);
+}
+static bool GimbalFsmGuardStandReached(void *ctx, const void *event_data)
+{
+    (void)event_data;
+    GimbalFsmCtx_s *c = (GimbalFsmCtx_s *)ctx;
+    return GimbalFsmTargetIsStand(c) && (c->posture == gimbal_posture_stand_e);
+}
+static bool GimbalFsmGuardNeedFall(void *ctx, const void *event_data)
+{
+    (void)event_data;
+    GimbalFsmCtx_s *c = (GimbalFsmCtx_s *)ctx;
+    return (c->mode == robot_mode_hole) && (c->posture != gimbal_posture_lye_e);
+}
+static bool GimbalFsmGuardLyeReached(void *ctx, const void *event_data)
+{
+    (void)event_data;
+    GimbalFsmCtx_s *c = (GimbalFsmCtx_s *)ctx;
+    return (c->mode == robot_mode_hole) && (c->posture == gimbal_posture_lye_e);
+}
+
+/*---------------- 转移表 ----------------*/
+/* 源状态一律通配：五条守卫已把 (目标姿态 × 实际姿态) 完全划分，落点唯一；
+ * 表顺序 = 优先级，失能排最前（cmd 说 stop 时无论机构在哪都直接进失能）。 */
+static const LibFsmTableTransition_s gimbal_fsm_table[] = {
+    {LIB_FSM_TABLE_ANY_STATE, gimbal_ev_update_e, gimbal_state_disable_e, GimbalFsmGuardDisable, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
+    {LIB_FSM_TABLE_ANY_STATE, gimbal_ev_update_e, gimbal_state_rising_e, GimbalFsmGuardNeedRise, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
+    {LIB_FSM_TABLE_ANY_STATE, gimbal_ev_update_e, gimbal_state_stand_e, GimbalFsmGuardStandReached, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
+    {LIB_FSM_TABLE_ANY_STATE, gimbal_ev_update_e, gimbal_state_falling_e, GimbalFsmGuardNeedFall, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
+    {LIB_FSM_TABLE_ANY_STATE, gimbal_ev_update_e, gimbal_state_lying_e, GimbalFsmGuardLyeReached, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
+};
+LIB_FSM_TABLE_CHECK_TABLE(gimbal_fsm_table);
+
+/*---------------- 每拍推进 ----------------*/
+/* 姿态是 (模式, 位置) 的函数，但换状态的两条边（cmd 换档、机构到位）各自只在**变化**时
+ * 派发：否则同值也走一次外部转移（退出+进入各跑一遍），将来挂上状态动作就会每拍重跑。 */
+static void GimbalFsmUpdate(robot_mode mode, float pitchdown_pos)
+{
+    gimbal_fsm_ctx.mode = mode;
+    gimbal_fsm_ctx.posture = gimbal_posture_unknown_e;
+    if (pitchdown_pos >= pitchdown_position_max - GIMBAL_POSTURE_EPS)
+    {
+        gimbal_fsm_ctx.posture = gimbal_posture_stand_e;
+    }
+    else if (pitchdown_pos <= pitchdown_position_min + GIMBAL_POSTURE_EPS)
+    {
+        gimbal_fsm_ctx.posture = gimbal_posture_lye_e;
+    }
+    if ((mode != gimbal_fsm_ctx.mode_last) || (gimbal_fsm_ctx.posture != gimbal_fsm_ctx.posture_last))
+    {
+        LibFsmTableDispatch(&gimbal_fsm, gimbal_ev_update_e, NULL);
+        gimbal_fsm_ctx.mode_last = mode;
+        gimbal_fsm_ctx.posture_last = gimbal_fsm_ctx.posture;
+    }
+}
 
 /* 外部函数 */
 void AppGimbalInit(void)
@@ -148,12 +272,12 @@ void AppGimbalInit(void)
         .can_e = CAN_1,
         .controller_setting =
             {
-                .loop_type = MOTOR_LOOP_OPEN,                  // 控制模式
-                .feedback_direction = MOTOR_DIRECTION_REVERSE, // 反馈方向：镜像后 逆时针→正角度（原编码器逆时针为负）
-                .motor_direction = MOTOR_DIRECTION_REVERSE, // 输出方向：镜像后 正力矩→逆时针（与反馈同步翻，闭环稳定）
-                .position_mode = MOTOR_POSITION_WRAP,       // 位置模式（yaw无限旋转用环绕）
-                .angle_limit_max = M_PI,                    // WRAP: 归一化上限
-                .angle_limit_min = -M_PI,                   // WRAP: 归一化下限
+                .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
+                .feedback_direction = MOTOR_DIRECTION_REVERSE,         // 反馈方向：镜像后 逆时针→正角度（原编码器逆时针为负）
+                .motor_direction = MOTOR_DIRECTION_REVERSE,            // 输出方向：镜像后 正力矩→逆时针（与反馈同步翻，闭环稳定）
+                .position_mode = MOTOR_POSITION_WRAP,                  // 位置模式（yaw无限旋转用环绕）
+                .angle_limit_max = M_PI,                               // WRAP: 归一化上限
+                .angle_limit_min = -M_PI,                              // WRAP: 归一化下限
                 .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
                 .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
                 .speed_feedforward_ptr = NULL,                         // 速度前馈指针
@@ -315,11 +439,28 @@ void AppGimbalInit(void)
          * 打开后 drvlib 每帧把 IMU 数据写进 CH1~CH15 并自己发帧（通道表见
          * drvlib_bmi088_kalman.h 头注释），app 这边不用再管 VOFA。
          * ⚠ 与 drv_axis_mit_lite 的 vofa_enable(CH1~CH12)、app_shoot 的调试块
-         *   (CH1~CH3) 共用通道号，同一时刻只开一路 */
-        .vofa_enable = 1,
+         *   (CH1~CH4) 共用通道号，同一时刻只开一路。
+         * 当前为 0：正在整定 app_shoot 的摩擦轮速度环（它占 CH1~CH4 并自己发帧），
+         * 两路同时开会每拍发两帧、数据互相覆盖。调完摩擦轮把这里改回 1。 */
+        .vofa_enable = 0,
 
     };
     BSP_ASSERT_APP_CALL(BMI088KalmanConfig(&bmi088, &bmi088_cfg));
+
+    // 云台状态机：上电先「失能」，等 cmd 的第一帧模式再换档（mode_last 零值即 stop，正好对上）
+    LibFsmTableConfig_s gimbal_fsm_cfg = {
+        .initial_state = gimbal_state_disable_e,
+        .transitions = gimbal_fsm_table,
+        .transition_count = sizeof(gimbal_fsm_table) / sizeof(gimbal_fsm_table[0]),
+        /* 暂无进入/退出动作：本状态机的产出是"哪几轴参与闭环"（见 AppGimbalRun）。
+         * 将来要"进档瞬间做一件事"（复位积分、把设定值对齐当前反馈…）就挂在这里。 */
+        .state_actions = NULL,
+        .state_count = 0,
+        .ctx = &gimbal_fsm_ctx,
+        .trace_fn = NULL,
+    };
+    LibFsmTableInit(&gimbal_fsm, &gimbal_fsm_cfg);
+    LibFsmTableStart(&gimbal_fsm);
 }
 
 ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
@@ -332,8 +473,8 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
     // 计算当前状态
     MotorData_s pitchdown_mdata = MotorGetData(&(pitchdown_motor.base));
     MotorData_s pitchup_mdata = MotorGetData(&(pitchup_motor.base));
-    pitchup_mdata.position = (pitchup_motor.base.data_all.data.position - pitchup_position_0) -
-                             (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
+    pitchup_mdata.position =
+        (pitchup_motor.base.data_all.data.position - pitchup_position_0) - (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
     MotorData_s yaw_mdata = MotorGetData(&(yaw_motor.base));
 
     // 换算为 axis lite 的反馈输入（lite 层不依赖 motor，故在 app 侧剥离 MotorData_s）
@@ -378,22 +519,23 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      *   且 CH1-2 基本不动。
      * 注意：帧由 drvlib 发出，app 不要再自己调 VofaSend（会多发一帧）；
      *       而通道号是全局的 —— drv_axis_mit_lite 的 vofa_enable 占用 CH1~CH12、
-     *       app_shoot.c 的调试块占用 CH1~CH3（那三路眼下没人发帧，属死写），
-     *       要同时看就得把它们错开或用别的通道号 */
+     *       app_shoot.c 的调试块占用 CH1~CH4，要同时看就得把它们错开或用别的通道号；
+     *       本 app 眼下是"整定发射就把这里关掉、发射调完再打开"（见下面 vofa_enable） */
 
     // setref
-    /* 状态机：stop = 失能（setref 保持 0）；normal/gyro 两档云台行为一致，给定都由 cmd
-     * 算好，差异只体现在底盘 w 上、且已由 cmd 侧按模式算完，故这里统一判 != stop。
-     * hole（过洞）：pitch 上下两个电机输出恒为 0（电机保持使能、仍发零力矩控制帧，
-     * 云台靠机构自重/收拢下垂），只有 yaw 继续控世界系航向。 */
-    robot_mode gimbal_mode = gimbal_cmd2gimbal_data.mode;
-    uint8_t pitch_off = (robot_mode_hole == gimbal_mode); // 过洞模式关闭 pitch
+    /* 状态机：驱动量 = cmd 下发的模式（目标姿态）+ 下 pitch 位置（实际姿态），解出
+     * 失能/立起中/直立/倒下中/倒下，再由状态决定哪几轴参与闭环 —— 见 GimbalFsmUpdate
+     * 上方的注释。 */
+    GimbalFsmUpdate(gimbal_cmd2gimbal_data.mode, (float)pitchdown_mdata.position);
+    gimbal_state_e gimbal_state = (gimbal_state_e)LibFsmTableCurrent(&gimbal_fsm);
+    uint8_t pitch_on = (gimbal_state == gimbal_state_stand_e) || (gimbal_state == gimbal_state_rising_e);
+    uint8_t yaw_on = (gimbal_state != gimbal_state_disable_e);
     // 清零
     pitchup_motor_setref = 0;
     pitchdown_motor_setref = 0;
     yaw_motor_setref = 0;
     // setref-pitchup
-    if (robot_mode_stop != gimbal_mode && !pitch_off)
+    if (pitch_on)
     {
         // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
         AxisMitLiteRef_s pitchup_ref = {
@@ -404,7 +546,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_state, &pitchup_ref);
     }
     // setref-pitchdown
-    if (robot_mode_stop != gimbal_mode && !pitch_off)
+    if (pitch_on)
     {
         // 固定值+重力前馈+速度误差项+pitchup力矩单向叠加
         float diejia_pitchup_motor_setref = 0; // 要叠加在pitchdown的力矩
@@ -423,7 +565,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
                                  diejia_pitchup_motor_setref;                                // pitchup单向
     }
     // setref-yaw
-    if (robot_mode_stop != gimbal_mode)
+    if (yaw_on)
     {
         // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
         AxisMitLiteRef_s yaw_ref = {
@@ -451,6 +593,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      *     现在拿的是世界系航向，normal/gyro 下会持续自转。这两个字段就是给它预留的，
      *     cmd 侧切过来后，底盘跟随改用 yaw_motor_position/yaw_motor_vel 即可。 */
     gimbal2cmd_data_t gimbal2cmd_data = {
+        .state = gimbal_state, // 云台实际姿态（cmd 可拿去判"云台到没到位/在不在动作中"）
         .pitch_position = pitchup_mdata.position,
         .pitch_vel = pitchup_mdata.speed,
         .yaw_position = imu_data.euler.yaw,

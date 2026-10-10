@@ -38,7 +38,7 @@
  * @note 开销宏统一为函数式（COMM_DEF 传入本实例 payload 字节数）；本协议开销固定，忽略实参 */
 #define PROTO_VISUAL_OVERHEAD(payload_size) 2
 
-/* 视觉线协议 cmd_ID 常量见 app.h 的 vision_cmd_e 枚举：
+/* 视觉线协议 cmd_ID 常量见 app/app_cmd_visual.h 的 vision_cmd_e 枚举：
  *   接收帧（视觉→板）首字节 = VISUAL_CMD_RX，发送帧（板→视觉）首字节 = VISUAL_CMD_TX */
 
 /* 视觉协议派生结构体：仅编解码，不内嵌数据字段（首成员必须为 CommProto 基类） */
@@ -60,10 +60,8 @@ typedef struct
  * @example
  *   COMM_PROTO_VISUAL_DEF(proto_vis, vis_comm_media, 55);  // 发送 payload 55B
  */
-#define COMM_PROTO_VISUAL_DEF(name, media_, payload_sz) \
-    static CommProtoVisual name = {                     \
-        .base.payload_size = payload_sz,                \
-        .base.media = (void *)&media_} /* 尾部无分号，调用处加 */
+#define COMM_PROTO_VISUAL_DEF(name, media_, payload_sz)                                                                                                        \
+    static CommProtoVisual name = {.base.payload_size = payload_sz, .base.media = (void *)&media_} /* 尾部无分号，调用处加 */
 
 /**
  * @brief 初始化视觉协议后端（挂 vtable + 清错误计数）

@@ -1,6 +1,10 @@
 #include "app_cmd.h"
 #include "app_cfg.h"
 #include "app.h"
+#include "app_cmd_chassis.h" // 底盘-云台 CAN 线协议数据结构
+#include "app_cmd_gimbal.h"  // gimbal2cmd / cmd2gimbal 队列句柄与数据结构
+#include "app_cmd_shoot.h"   // cmd2shoot / shoot2cmd 队列句柄与数据结构
+#include "app_cmd_visual.h"  // 视觉线协议业务数据结构
 #include "app_proto_visual.h"
 #include "robot_def.h" // gimbal限位/速度/加速度宏
 //
@@ -32,19 +36,23 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 #define DEADZONE (0.01f)
 #define sbus_half 0.5 // 判断开关通道float等于1/-1/0
 
+/* 发射模式在 ch9 上的三段分界：把 -1~1 等分，-1 端 → +1 端依次为 单发/三连发/全自动。
+ * 旋钮不回中（-1 和 +1 都是有效停位），故按等分取，不设回中死区。 */
+#define FIRE_MODE_SEG (1.0f / 3.0f)
+
 /* SBUS 通道分配（0 基；摇杆 -1~1，三档开关 -1/0/+1，旋钮 -1~1）
  * 注：README「操作逻辑」一节写的拨杆号与代码不一致（那里把自瞄放在第 7 路、
  *     第 5 路未用），这里以实机在用的映射为准。 */
-#define SBUS_CH_VY 0     // 右摇杆左右 → 底盘 vy
-#define SBUS_CH_VX 1     // 右摇杆前后 → 底盘 vx
-#define SBUS_CH_PITCH 2  // 左摇杆上下 → 云台 pitch
-#define SBUS_CH_YAW 3    // 左摇杆左右 → 云台 yaw
-#define SBUS_CH_ENABLE 4 // 总开关：上 = 使能
-#define SBUS_CH_AIM 5    // 自瞄开关：与视觉"有目标"同时成立才把云台交给视觉
-#define SBUS_CH_MODE 6   // 档位开关（三档）：normal / gyro / hole
-#define SBUS_CH_FIRE 7   // 开火
-#define SBUS_CH_SPEED 8  // 平动速度旋钮：缩放底盘平动最大速度（最小档 ~ 最大档）
-#define SBUS_CH_ROTATE 9 // 旋转速度旋钮：缩放 gyro(小陀螺)档的自转角速度（最小档 ~ 最大档）
+#define SBUS_CH_VY 0        // 右摇杆左右 → 底盘 vy
+#define SBUS_CH_VX 1        // 右摇杆前后 → 底盘 vx
+#define SBUS_CH_PITCH 2     // 左摇杆上下 → 云台 pitch
+#define SBUS_CH_YAW 3       // 左摇杆左右 → 云台 yaw
+#define SBUS_CH_ENABLE 4    // 总开关：上 = 使能
+#define SBUS_CH_AIM 5       // 自瞄开关：与视觉"有目标"同时成立才把云台交给视觉
+#define SBUS_CH_MODE 6      // 档位开关（三档）：normal / gyro / hole
+#define SBUS_CH_FIRE 7      // 开火总闸（两段开关）：0 = 关，1 = 由下面这个旋钮选模式
+#define SBUS_CH_SPEED 8     // 底盘速度旋钮：同时缩放平动最大速度与 gyro(小陀螺)档自转角速度（最小档 ~ 最大档）
+#define SBUS_CH_FIRE_MODE 9 // 发射模式旋钮：ch7=1 时把 -1~1 等分三段选 单发/三连发/全自动（非回中，无死区）
 
 /*============================================
  *              枚举
@@ -62,22 +70,23 @@ typedef enum : uint8_t
 /* AppCmdRun 的帧内上下文：{sbus遥控，图传，键鼠，视觉} 统一接口控制 {云台，底盘，发射，视觉}。
  *
  * 输入源（sbus / 图传 / 键鼠）只负责把自身输入翻译成这里的 归一化通道(-1~1)，
- * 外加 状态机/开火 两个开关量；下游（云台规划、底盘解算、开火、状态回传）只认这份
+ * 外加 状态机/开火/发射模式 三个开关量；下游（云台规划、底盘解算、开火、状态回传）只认这份
  * 上下文，不再各自去读某个遥控源。视觉源是特例：不写通道，直接给出云台 位置/速度/加速度。 */
 typedef struct
 {
     cmd_control_type type; // 本帧生效的控制源
 
-    robot_mode mode; // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
-    uint8_t fire;    // 开火
+    robot_mode mode;       // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
+    uint8_t fire;          // 开火总闸（ch7）：0 = 关
+    fire_mode_e fire_mode; // 发射模式：fire=0 → 关；fire=1 → ch9 三段解出 单发/三连发/全自动
 
     // 归一化通道 (-1~1)：摇杆/开关中位 0
-    float gimbal_pitch_channel;   // 云台 pitch
-    float gimbal_yaw_channel;     // 云台 yaw
-    float chassis_vx_channel;     // 底盘前后
-    float chassis_vy_channel;     // 底盘左右
-    float chassis_speed_channel;  // 底盘平动速度旋钮：-1 = 最小速度档，+1 = 最大速度档（非回中，无死区）
-    float chassis_rotate_channel; // 小陀螺转速旋钮：同上，缩放 gyro 档自转角速度
+    float gimbal_pitch_channel;  // 云台 pitch
+    float gimbal_yaw_channel;    // 云台 yaw
+    float chassis_vx_channel;    // 底盘前后
+    float chassis_vy_channel;    // 底盘左右
+    float chassis_speed_channel; // 底盘速度旋钮：-1 = 最小速度档，+1 = 最大速度档（非回中，无死区）；
+                                 // 同时缩放平动最大速度与 gyro 档自转角速度
 } AppCmdRun_ctx_struct;
 
 /*============================================
@@ -167,7 +176,6 @@ static void input_sbus(void)
     cmd_ctx.chassis_vy_channel = sbus_inst.sbus_data.ch[SBUS_CH_VY];
     // 旋钮不回中、也不该被死区吃掉，原值直接用
     cmd_ctx.chassis_speed_channel = sbus_inst.sbus_data.ch[SBUS_CH_SPEED];
-    cmd_ctx.chassis_rotate_channel = sbus_inst.sbus_data.ch[SBUS_CH_ROTATE];
 }
 
 /* 图传遥控 → 4 通道
@@ -191,12 +199,12 @@ static void input_update(void)
     cmd_ctx.type = no_control_e;
     cmd_ctx.mode = robot_mode_stop;
     cmd_ctx.fire = 0;
+    cmd_ctx.fire_mode = fire_mode_off_e;
     cmd_ctx.gimbal_pitch_channel = 0.0f;
     cmd_ctx.gimbal_yaw_channel = 0.0f;
     cmd_ctx.chassis_vx_channel = 0.0f;
     cmd_ctx.chassis_vy_channel = 0.0f;
-    cmd_ctx.chassis_speed_channel = 0.0f;  // 中位 = 速度区间中点（失能时无意义）
-    cmd_ctx.chassis_rotate_channel = 0.0f; // 中位 = 转速区间中点（失能时无意义）
+    cmd_ctx.chassis_speed_channel = 0.0f; // 中位 = 速度区间中点（失能时无意义）
 
     /* 源选择暂时只建立在 SBUS 遥控在线的基础上：遥控掉线 → 全部失能。
      * 图传/键鼠接入后，在这里追加各自的在线判断与优先级。 */
@@ -216,7 +224,24 @@ static void input_update(void)
         cmd_ctx.mode = robot_mode_hole; // 下档
     else
         cmd_ctx.mode = robot_mode_gyro; // 中档
+    /* 发射：ch7 是总闸（两段开关），ch7 = 1 时由 ch9 旋钮在 -1~1 上等分三段选模式。
+     * 两个都按"开关量"在这里直接读 sbus（ch9 现在是选择器，不再是旋钮通道）。
+     * 极性：-1 端 → +1 端依次为 单发 / 三连发 / 全自动。 */
     cmd_ctx.fire = (sbus_inst.sbus_data.ch[SBUS_CH_FIRE] > sbus_half) ? 1 : 0;
+    if (cmd_ctx.fire == 0)
+    {
+        cmd_ctx.fire_mode = fire_mode_off_e;
+    }
+    else
+    {
+        float fm = sbus_inst.sbus_data.ch[SBUS_CH_FIRE_MODE];
+        if (fm < -FIRE_MODE_SEG)
+            cmd_ctx.fire_mode = fire_mode_single_e;
+        else if (fm < FIRE_MODE_SEG)
+            cmd_ctx.fire_mode = fire_mode_triple_e;
+        else
+            cmd_ctx.fire_mode = fire_mode_auto_e;
+    }
 
     // 云台控制权：自瞄开关打开且视觉有目标 → 交给视觉，否则由摇杆控制
     if ((sbus_inst.sbus_data.ch[SBUS_CH_AIM] > sbus_half) && (vision_appear_e == vision_recv_data.appear))
@@ -246,7 +271,7 @@ static void input_update(void)
 /* 底盘自转速度 w (rad/s)：底盘是云台的纯伺服机构，只执行 (enabled, vx, vy, w)，
  * 模式相关的 w 全部在这里按状态机算好再发下去。
  *   normal / hole：跟随——把"云台相对底盘的角度"θ 拉回 0，底盘即转回云台指向
- *   gyro         ：定值自转（底盘自转、云台锁世界系航向，操作手照常瞄准），转速由 ch9 旋钮缩放
+ *   gyro         ：定值自转（底盘自转、云台锁世界系航向，操作手照常瞄准），转速由 ch8 旋钮缩放
  *   stop         ：0
  *
  * θ 是"云台相对底盘的夹角、逆时针为正"，由调用方算出后传入（见 send_chassis）。
@@ -272,7 +297,7 @@ static float chassis_w_from_mode(float theta, float yaw_rate_cmd)
         // gyro 档底盘在定速自转、云台锁世界系航向让操作手照常瞄准：两者互不跟随，
         // 不加 yaw 前馈（否则瞄准时摇杆会叠加到自转速度上，自转不再是定值），
         // 也不吃跟随限幅——这个定值由旋转速度旋钮（ch9）缩放后恒等输出
-        return knob_scale(cmd_ctx.chassis_rotate_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
+        return knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
     }
 
     if ((robot_mode_normal != cmd_ctx.mode) && (robot_mode_hole != cmd_ctx.mode))
@@ -309,8 +334,7 @@ static void send_gimbal(void)
      *   ② 视觉交还通道源的首拍播种一次：视觉期间 planner 被绕过、累加器停在旧值，
      *      交还时用当前反馈重新锚定。
      * 视觉接管瞬间（通道源→视觉）不播种：本拍 planner 不被调用，旧值无人消费。 */
-    uint8_t seed_position = (robot_mode_stop == cmd_ctx.mode) ||
-                            ((visual_control_e == cmd_last_control_type) && (visual_control_e != cmd_ctx.type));
+    uint8_t seed_position = (robot_mode_stop == cmd_ctx.mode) || ((visual_control_e == cmd_last_control_type) && (visual_control_e != cmd_ctx.type));
 
     if (visual_control_e == cmd_ctx.type)
     {
@@ -387,12 +411,12 @@ static void send_chassis(void)
     float theta = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
     float c = Lib_Math_Cos(theta);
     float s = Lib_Math_Sin(theta);
-    /* 平动速度旋钮调速：ch8 (-1~1) 映射成本拍可用的平动最大速度
+    /* 底盘速度旋钮调速：ch8 (-1~1) 映射成本拍可用的平动最大速度
      *   knob = -1 → chassis_translate_speed_min（慢速档）
      *   knob = +1 → chassis_translate_speed（全速档）
-     * 摇杆只决定方向与在该上限内的比例，满舵 = 该档位的最大速度。 */
-    float translate_speed =
-        knob_scale(cmd_ctx.chassis_speed_channel, chassis_translate_speed_min, chassis_translate_speed);
+     * 摇杆只决定方向与在该上限内的比例，满舵 = 该档位的最大速度。
+     * 同一个旋钮在 gyro 档也缩放自转角速度，两处上限各自独立（见 chassis_w_from_mode）。 */
+    float translate_speed = knob_scale(cmd_ctx.chassis_speed_channel, chassis_translate_speed_min, chassis_translate_speed);
     // 摇杆 → 云台指向坐标系下的速度向量 (vx 前+、vy 左+)
     float vx_stick = channel_deadzone(cmd_ctx.chassis_vx_channel) * translate_speed;
     float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * translate_speed;
@@ -409,7 +433,10 @@ static void send_chassis(void)
 // 给射击（队列）
 static void send_shoot(void)
 {
-    cmd_cmd2shoot_data.fire_or_not = cmd_ctx.fire;
+    cmd_cmd2shoot_data.mode = cmd_ctx.mode; // 机器人模式（shoot 侧尚无使用点，留给"失能/过洞禁发射"之类的判据）
+    cmd_cmd2shoot_data.fire_mode = cmd_ctx.fire_mode;
+    /* fire_rate 与两个裁判校准量暂无来源（射频标定、裁判消息链路都还没接），
+     * cmd_cmd2shoot_data 是文件级 static，零初始化后没人写过 → 这里保持 0。 */
     xQueueOverwrite(cmd2shoot_queue_handle, &cmd_cmd2shoot_data);
 }
 

@@ -1,4 +1,6 @@
 #include "app.h"
+#include "app_cmd_gimbal.h" // gimbal2cmd / cmd2gimbal 队列句柄与数据结构
+#include "app_cmd_shoot.h"  // cmd2shoot / shoot2cmd 队列句柄与数据结构
 #include "app_cfg.h"
 //
 #include "bsp_log.h"
