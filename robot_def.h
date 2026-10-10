@@ -80,17 +80,16 @@
 #define TRIGGER_STEP_RAD (2.0f * M_PI * TRIGGER_GEAR_RATIO / TRIGGER_PADDLE_HOLES) // 每发一颗电机转角 (rad)
 
 /* 摩擦轮机械参数与弹速上限
- * 摩擦轮直径 5cm（半径 2.5cm），弹丸出口速度 ≈ 摩擦轮线速度：v = ω·r。
+ * 摩擦轮半径 23mm），弹丸出口速度 ≈ 摩擦轮线速度：v = ω·r。
  * 规则弹丸速度上限 25 m/s，实际留余量取 22 m/s（约 12% 余量，覆盖弹丸批次差异与
  * 摩擦轮磨损/打滑）。22 m/s 对应摩擦轮 880 rad/s（≈8400 rpm）：若摩擦轮与电机
  * 反馈轴之间还有减速，把 FRICTION_REDUCTION 填成该传动比（电机:摩擦轮 = n:1 时
  * ω_电机 = n·v/r）；摩擦轮直接装在反馈轴上则填 1。
  * ch9 调试旋钮 -1~1 映射到 0~BULLET_SPEED_MAX (m/s)，换算在 app_shoot.c。 */
-#define FRICTION_WHEEL_DIAMETER 0.05f                          // 摩擦轮直径 (m)
-#define FRICTION_WHEEL_RADIUS (FRICTION_WHEEL_DIAMETER * 0.5f) // 摩擦轮半径 (m) = 0.025
-#define FRICTION_REDUCTION 1.0f                                // 电机反馈轴:摩擦轮 传动比（直驱 = 1）
-#define BULLET_SPEED_RULE_MAX 25.0f                            // 规则弹丸速度上限 (m/s)
-#define BULLET_SPEED_MAX 22.0f                                 // 实际使用弹速上限 (m/s)，ch9 映射上限
+#define FRICTION_WHEEL_RADIUS 0.023 // 摩擦轮半径 (m) = 0.023
+#define FRICTION_REDUCTION 1.0f     // 电机反馈轴:摩擦轮 传动比（直驱 = 1）
+#define BULLET_SPEED_RULE_MAX 25.0f // 规则弹丸速度上限 (m/s)
+#define BULLET_SPEED_MAX 22.0f      // 实际使用弹速上限 (m/s)，ch9 映射上限
 
 // 我们的flysky遥控参数
 #define FS_SBUS_CH_MIN 240
