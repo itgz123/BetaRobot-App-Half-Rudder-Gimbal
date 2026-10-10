@@ -433,7 +433,12 @@ static void send_chassis(void)
 // 给射击（队列）
 static void send_shoot(void)
 {
-    cmd_cmd2shoot_data.mode = cmd_ctx.mode; // 机器人模式（shoot 侧尚无使用点，留给"失能/过洞禁发射"之类的判据）
+    /* 摩擦轮使能 = 总开关(ch4) 开着 且 云台已经立到直立位：
+     *   - ch4 断开 / 遥控掉线 → 失能（掉线时 sbus 数据是陈旧的，按"全部失能"的既有约定处理）；
+     *   - 云台在 失能/立起中/倒下中/倒下 → 失能，避免云台还没立起来/过洞收着就把弹打出去。
+     * 只看 gimbal_state_stand_e，不含立起中：位置环刚爬升那一段还没到位。 */
+    uint8_t remote_on = (sbus_inst.daemon->is_online == 1) && (sbus_inst.sbus_data.ch[SBUS_CH_ENABLE] > sbus_half);
+    cmd_cmd2shoot_data.enable = (uint8_t)(remote_on && (cmd_gimbal2cmd_data.state == gimbal_state_stand_e));
     cmd_cmd2shoot_data.fire_mode = cmd_ctx.fire_mode;
     /* fire_rate 与两个裁判校准量暂无来源（射频标定、裁判消息链路都还没接），
      * cmd_cmd2shoot_data 是文件级 static，零初始化后没人写过 → 这里保持 0。 */

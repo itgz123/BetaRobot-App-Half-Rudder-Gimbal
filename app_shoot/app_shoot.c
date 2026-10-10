@@ -25,11 +25,18 @@
 
 /*-------------------------------- 电机模式 --------------------------------
  * 比赛形态：云台立起 → 摩擦轮启动后全程不停，发弹只需拨盘动作；两个电机互不联动。
- * 本阶段两个电机都**固定给 0**：
- *   - 摩擦轮：目标速度已无来源（射频/弹速尚未接线），每拍仍发 0 电流帧 —— C620 保持
- *     使能、零力矩自由滑行，不掉线也不报错；
- *   - 拨盘  ：只跑状态机（见 AppShootRun），位置/速度环与轨迹规划都未接入。
+ * 本阶段：
+ *   - 摩擦轮：只有"使能/失能"两态（enable 由 cmd 算，见 app_cmd_shoot.h）。使能跑速度环、
+ *     目标就是满速（见 FRICTION_SPEED_FULL）；失能**不跑控制核**，直接下发 0 A 电流帧，
+ *     并清一次 PID —— C620 保持使能、零力矩自由滑行，不掉线也不报错。
+ *   - 拨盘  ：只跑状态机（见 AppShootRun），位置/速度环与轨迹规划都未接入，固定给 0。
  * 两者的 PID 配置与实例都留在 AppShootInit 里，接回时只需恢复"从控制核取输出"那几行。 */
+
+/* 摩擦轮"全速"目标转速 (rad/s)：本阶段弹速/射频来源都没接线，使能就只有"满速"一档，
+ * 取规则弹速上限对应的电机转速（半径/传动比见 robot_def.h，量与反馈同轴）。
+ * 注意：该值是按 BULLET_SPEED_MAX 反推的，若实机顶在 FRICTION_I_MAX 不回落，说明它超过
+ * 了可达转速（速度环饱和、持续大电流），往下调即可 —— 唯一用途就是"起转到满"。 */
+#define FRICTION_SPEED_FULL BULLET_SPEED_TO_MOTOR_RADPS(BULLET_SPEED_MAX)
 
 /* 拨盘摩擦前馈（库仑摩擦补偿）：拨盘摩擦大，全靠 PI 现爬会有启动迟滞和低速稳态差。
  * 前馈按运动方向直接给出"克服摩擦所需"的那份力矩，PI 只补模型误差和动态误差。
@@ -542,17 +549,35 @@ void AppShootInit(void)
 
 ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
 {
-    (void)dt; // 本阶段无电机控制通路（电机固定 0），控制周期不参与计算
     (void)time_stamp;
     // 1. 接收
     xQueueReceive(cmd2shoot_queue_handle, &shoot_cmd2shoot_data, 0);
 
     // 2. 控制
-    /* ---- 摩擦轮：固定给 0 ----
-     * 目标速度已无来源（射频/弹速尚未接线），但每拍仍发 0 电流帧 → C620 保持使能、零力矩
-     * 自由滑行，不掉线也不报错。不发控制核（PID 状态冻结），速度环配置留在 AppShootInit。 */
-    friction_motor_setref = 0.0f;
-    DrvsDJIMotorBroadcastSetRef(&friction_motor, 0.0f);
+    /* ---- 摩擦轮：使能满速 / 失能直接给 0 ----
+     * 使能：跑速度环（本阶段目标恒 = FRICTION_SPEED_FULL），反馈喂控制核、输出即电流；
+     * 失能：不跑控制核，直接 0 A，并清一次 PID —— 否则冻结的积分会带着旧值，下次使能
+     *       起步就是一脚踢。两种状态下电机都在收帧，C620 不掉线。 */
+    DrvsDJIMotorBroadcastData_s fm = DrvsDJIMotorBroadcastGetData(&friction_motor);
+    if (shoot_cmd2shoot_data.enable)
+    {
+        friction_motor_setref = FRICTION_SPEED_FULL;
+        DrvlibMotorFeedback_s friction_fb = {
+            .position = fm.position,
+            .speed = fm.speed,
+            .current = fm.current,
+            .timestamp_us = fm.timestamp_us,
+        };
+        /* app 拿到的 dt 是**毫秒**（见 bsp_app.h 的 APP_TASK_DEF 语义），控制核要秒 */
+        float friction_out = DrvlibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, dt * 0.001f);
+        DrvsDJIMotorBroadcastSetRef(&friction_motor, friction_out);
+    }
+    else // 之后考虑刹车
+    {
+        friction_motor_setref = 0.0f;
+        DrvlibMotorReset(&friction_motor_ctrl); // 清 PID（含积分）与 LPF 状态，不动 enable 标志
+        DrvsDJIMotorBroadcastSetRef(&friction_motor, 0.0f);
+    }
     DrvsDJIMotorBroadcastGroupSend(&friction_motor_group);
 
     // ---- 拨盘 ----

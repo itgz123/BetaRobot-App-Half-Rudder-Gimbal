@@ -3,7 +3,6 @@
 
 #include <stdint.h>
 
-#include "app.h"          /* robot_mode（cmd2shoot_data_t 的状态码字段） */
 #include "bsp_freertos.h" /* QueueHandle_t */
 
 /*============================================
@@ -30,11 +29,13 @@ typedef enum : uint8_t
  *   本版为对照射机构（射频 + 热量）+ 裁判系统校准重写的接口；
  *   旧的调试字段（fire_or_not / bullet_speed / debug_knob / temp_unused）已删。
  *   两侧调用点：app_cmd.c 已按 fire_mode 下发；app_shoot.c 已接成拨弹状态机。
+ *   enable 由 cmd 侧算（见 app_cmd.c 的 send_shoot）：总开关(ch4) 打开 且 云台状态为直立 ——
+ *   过洞/失能/立起中都不给转。
  *   尚未接线：fire_rate 与两个裁判校准量（cmd 侧暂无来源）、shoot2cmd 的两个回传量。
  *============================================*/
 typedef struct
 {
-    robot_mode mode;       // 机器人模式（stop/normal/gyro/hole），shoot 侧尚无使用点
+    uint8_t enable;        // 摩擦轮使能：1=使能（满速转）、0=失能（直接给 0 电流）
     fire_mode_e fire_mode; // 发射模式
     float fire_rate;       // 射频 (发/s)
 
