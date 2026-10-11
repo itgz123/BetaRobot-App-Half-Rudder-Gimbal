@@ -36,13 +36,17 @@ static float trigger_friction_ff = 0;   // 拨盘摩擦前馈 (A)：speed_feedfo
 LIB_TRAJ_INSTANCE_DEF(trigger_traj);     // 本段（一步 / 三发一程 / 连发一整段 / 收尾段）的预计算轨迹
 static LibTraj_Output_s trigger_ref_out; // 上一拍参考输出（position/velocity/acceleration）
 static float trigger_angle_ff = 0;       // 角度环(速度设定值域)前馈 = 参考速度；空闲恒 0
-static float trigger_target_pos = 0;     // 本段轨迹终点 (rad, app 正向, 多圈)：恒为 起始 + N×TRIGGER_STEP_RAD
+static float trigger_target_pos = 0;     // 本段轨迹终点 (rad, app 正向, 多圈)：锚在理论网格 trigger_grid_pos 上
 static uint8_t trigger_planned = 0;      // 当前是否有有效轨迹在跑
 static uint8_t trigger_active = 0;       // 上一拍是否在主动驱动机构（退出沿清一次 PID 并锁位）
 // 连发收尾
-static float trigger_shot_origin = 0; // 本段的发数零点（规划时锁在起始实测位置），收尾轨迹据此对齐整数发
+static float trigger_shot_origin = 0; // 本段的发数零点（规划时取网格起点），收尾轨迹据此对齐整数发
 static uint8_t trigger_burst = 0;     // 当前跑的是连发长轨迹（松手后需再走一条收尾轨迹才真正停）
 static uint8_t trigger_settling = 0;  // 正在走连发的收尾轨迹（终点为整数发边界、终点静止）
+/* 发数网格相位：规划终点锚定在它上面，而不是"实测 + span"（见 AppShootRun 规划分支的长注释）。
+ * grid_pos = 上一次规划的**理论**终点；valid=0（开机首发的规划）会把网格锚到实测。 */
+static float trigger_grid_pos = 0;
+static uint8_t trigger_grid_valid = 0;
 
 /*============================================
  *        拨弹状态机（lib_fsm_table）
@@ -75,7 +79,7 @@ typedef enum : uint8_t
 {
     trigger_ev_fire_on_e = 0, // ch7 0→1
     trigger_ev_fire_off_e,    // ch7 1→0
-    trigger_ev_step_done_e,   // 走完一发：单发=轨迹走完；三发/连发=累计转角满一份 TRIGGER_STEP_RAD
+    trigger_ev_step_done_e,   // 走完一发：三种模式统一为"本段轨迹 finished"（见 app_shoot.c 收尾判据）
 } trigger_event_e;
 
 /* 状态机上下文：发射模式在每拍派发前由 TriggerFsmUpdate 刷新 */
@@ -451,31 +455,43 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
         drive = 1;
         if (!trigger_planned || trigger_fsm_ctx.plan_request)
         {
-            /* 规划本段：从**当前实测**位置/速度出发，终点 = 起点 + N 份 TRIGGER_STEP_RAD。
+            /* 规划本段：从**当前实测**位置/速度出发，终点 = 起点 + N 份 TRIGGER_STEP_ADVANCE_RAD。
              *   N：单发 1、三发 3、连发 TRIGGER_BURST_SHOTS（长轨迹，松手后另走一条收尾轨迹）。
              *   vmax：连发取射频换算值（射频就是这么被定下来的）；单发/三发取老代码位置环上限
              *   （122.17 rad/s），它们只有 13.4 / 40.2 rad 的行程，实际由 amax 决定快慢。
              * 起点速度取**实测**：连发收尾后紧接着再来一发时机构还在动，不能让轨迹从 v=0 起步。 */
             float p0 = (float)trigger_motor_ctrl.data.position;
             float v0 = trigger_motor_ctrl.data.speed;
-            float span = TRIGGER_STEP_RAD;
+            float span = TRIGGER_STEP_ADVANCE_RAD;
             float vmax = TRIGGER_TRAJ_VMAX;
             if (trigger_fsm_ctx.continuous)
             {
                 if (burst_now)
                 {
-                    span = TRIGGER_BURST_SHOTS * TRIGGER_STEP_RAD;
+                    span = TRIGGER_BURST_SHOTS * TRIGGER_STEP_ADVANCE_RAD;
                     vmax = TRIGGER_SPIN_SPEED;
                 }
                 else
                 {
-                    span = 3.0f * TRIGGER_STEP_RAD;
+                    span = 3.0f * TRIGGER_STEP_ADVANCE_RAD;
                 }
             }
             trigger_burst = burst_now;
             trigger_settling = 0;
-            trigger_shot_origin = p0;
-            trigger_target_pos = p0 + span;
+            /* 终点锚定**理论网格**，而不是"实测 + span"：轨迹收尾时位置环有超调 —— 实测会冲过
+             * ref 终点约 0.04 发（收尾瞬间机构仍在动），而空闲态 ref 又锁实测、把这个超调固化。
+             * 若拿实测当基准，每发的超调都被下一发继承、逐发累积：实测 35 次单发后超前整整一格
+             * ≈ 多送一颗弹（数据证据 ignore/vofa+.csv，用 tools/analyze_trigger_spin.py 复现）。
+             * 锚在理论链上，每发的**理论**前进量恒为 span，超调由下一发的 p0 起点自动吸收。
+             * 偏离网格过大（手动转动/堵转之后）才重锚到实测，免得轨迹起点与终点错位。 */
+            if (!trigger_grid_valid || fabsf(p0 - trigger_grid_pos) > TRIGGER_GRID_RESYNC_RAD)
+            {
+                trigger_grid_pos = p0; // 重锚：本段从实测起算
+            }
+            trigger_shot_origin = trigger_grid_pos; // 本段网格起点（连发收尾据此对齐整数发）
+            trigger_grid_pos += span;
+            trigger_target_pos = trigger_grid_pos;
+            trigger_grid_valid = 1;
 
             LibTrajJerkPlan_Request_s req = {
                 .p0 = p0,
@@ -537,7 +553,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
         drive = 1;
         if (!trigger_settling)
         {
-            float x = (trigger_ref_out.position - trigger_shot_origin) / TRIGGER_STEP_RAD + TRIGGER_BURST_STOP_MARGIN;
+            float x = (trigger_ref_out.position - trigger_shot_origin) / TRIGGER_STEP_ADVANCE_RAD + TRIGGER_BURST_STOP_MARGIN;
             float k = (float)(int32_t)x; // 向下取整
             if (k < x)
             {
@@ -549,7 +565,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
             }
             float p0 = (float)trigger_motor_ctrl.data.position;
             float v0 = trigger_motor_ctrl.data.speed;
-            trigger_target_pos = trigger_shot_origin + k * TRIGGER_STEP_RAD;
+            trigger_target_pos = trigger_shot_origin + k * TRIGGER_STEP_ADVANCE_RAD;
 
             LibTrajJerkPlan_Request_s req = {
                 .p0 = p0,
