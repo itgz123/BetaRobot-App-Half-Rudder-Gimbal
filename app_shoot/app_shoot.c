@@ -613,7 +613,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      *   CH8  实测电流 (A，app 正向)：本电机 torque_constant=1，数值上 ≈ 力矩
      *   CH9  本拍 dt (ms)：确认控制周期；有跳变说明任务被拖或 CAN 掉帧
      *   CH10 状态机状态 (0关/1单发/2三发/3连发/4停止)
-     *   CH11 驱动条件 enable&&fire (0/1)
+     *   CH11 驱动条件 enable && fire_mode!=off（等价于 enable 且 ch7 闭合）(0/1)
      *   CH12 原始反馈转速 (rad/s，**电机极性**，未取反)：用于核对方向约定 */
     VofaSetChannel(1, trigger_ref);
     VofaSetChannel(2, (float)trigger_motor_ctrl.data.position);
@@ -625,7 +625,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(8, -t.current); // 实测电流 (A)，取反到 app 正向
     VofaSetChannel(9, dt);         // 本拍 dt (ms)：app 拿到的 dt 就是毫秒
     VofaSetChannel(10, (float)LibFsmTableCurrent(&trigger_fsm));
-    VofaSetChannel(11, (float)(shoot_cmd2shoot_data.enable && shoot_cmd2shoot_data.fire));
+    VofaSetChannel(11, (float)(shoot_cmd2shoot_data.enable && (shoot_cmd2shoot_data.fire_mode != fire_mode_off_e)));
     VofaSetChannel(12, t.speed); // 原始反馈转速 (rad/s)，电机极性
     VofaSend();
 

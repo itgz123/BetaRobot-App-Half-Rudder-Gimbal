@@ -31,15 +31,14 @@ typedef enum : uint8_t
  *   两侧调用点：app_cmd.c 已按 fire_mode 下发；app_shoot.c 已接成拨弹状态机。
  *   enable 由 cmd 侧算（见 app_cmd.c 的 send_shoot）：总开关(ch4) 打开 且 云台状态为直立 ——
  *   过洞/失能/立起中都不给转。
- *   fire 是**开火总闸 ch7 的电平原样下传**（不含 ch9）：shoot 侧本轮做机构试验要用"使能
- *   且 ch7 闭合"作驱动判据，故不再只把它编进 fire_mode 里；ch7 断开时 cmd_ctx.fire=0，
- *   本字段也就跟着 0。
+ *   ch7 电平不再单独下传：已全部编进 fire_mode —— off = ch7 断开（或 ch4 关/掉线），非 off
+ *   = ch7 闭合（且 ch9 已解出 单发/三连发/全自动）。shoot 侧判"开火总闸闭合"用
+ *   fire_mode != fire_mode_off_e 即可。
  *   尚未接线：fire_rate 与两个裁判校准量（cmd 侧暂无来源）、shoot2cmd 的两个回传量。
  *============================================*/
 typedef struct
 {
     uint8_t enable;        // 摩擦轮使能：1=使能（满速转）、0=失能（直接给 0 电流）
-    uint8_t fire;          // 开火总闸 ch7 电平：1=闭合；0=断开（或 ch4 关/掉线）
     fire_mode_e fire_mode; // 发射模式（ch7 闭合时由 ch9 三段解出；ch7 断开 = off）
     float fire_rate;       // 射频 (发/s)
 

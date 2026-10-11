@@ -439,8 +439,7 @@ static void send_shoot(void)
      * 只看 gimbal_state_stand_e，不含立起中：位置环刚爬升那一段还没到位。 */
     uint8_t remote_on = (sbus_inst.daemon->is_online == 1) && (sbus_inst.sbus_data.ch[SBUS_CH_ENABLE] > sbus_half);
     cmd_cmd2shoot_data.enable = (uint8_t)(remote_on && (cmd_gimbal2cmd_data.state == gimbal_state_stand_e));
-    cmd_cmd2shoot_data.fire = cmd_ctx.fire; // ch7 电平原样下传（ch4 关/掉线时 cmd_ctx.fire 已是 0）
-    cmd_cmd2shoot_data.fire_mode = cmd_ctx.fire_mode;
+    cmd_cmd2shoot_data.fire_mode = cmd_ctx.fire_mode; // ch7 电平已内含：off = ch7 断开（或 ch4 关/掉线）
     /* fire_rate 与两个裁判校准量暂无来源（射频标定、裁判消息链路都还没接），
      * cmd_cmd2shoot_data 是文件级 static，零初始化后没人写过 → 这里保持 0。 */
     xQueueOverwrite(cmd2shoot_queue_handle, &cmd_cmd2shoot_data);
