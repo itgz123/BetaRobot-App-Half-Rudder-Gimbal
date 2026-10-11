@@ -29,23 +29,31 @@ DRVLIB_MOTOR_INSTANCE_DEF(trigger_motor_ctrl);           // 拨弹 速度环（�
 static cmd2shoot_data_t shoot_cmd2shoot_data; // cmd-shoot
 static shoot2cmd_data_t shoot_shoot2cmd_data; // shoot-cmd
 // 数据
-static float friction_motor_setref = 0; // 摩擦轮目标转速 (rad/s)：本阶段无来源，恒 0
-static float trigger_friction_ff = 0;   // 拨盘摩擦前馈 (A)：speed_feedforward 指针指向它，本阶段恒 0
+static float friction_motor_setref = 0; // 摩擦轮目标转速 (rad/s)：使能时 = FRICTION_SPEED_FULL，失能时 0
+static float trigger_friction_ff = 0;   // 拨盘摩擦前馈 (A)：库仑项 + **起步一两拍**叠加的静摩擦突破项，见 §静摩擦前馈
 
 // 拨盘参考：单发/三发/连发都走 lib_traj_jerk 点到点轨迹，**终点必落在发数网格上**
 LIB_TRAJ_INSTANCE_DEF(trigger_traj);     // 本段（一步 / 三发一程 / 连发一整段 / 收尾段）的预计算轨迹
 static LibTraj_Output_s trigger_ref_out; // 上一拍参考输出（position/velocity/acceleration）
 static float trigger_angle_ff = 0;       // 角度环(速度设定值域)前馈 = 参考速度；空闲恒 0
-static float trigger_target_pos = 0;     // 本段轨迹终点 (rad, app 正向, 多圈)：锚在理论网格 trigger_grid_pos 上
+static float trigger_target_pos = 0;     // 本段轨迹终点 (rad, app 正向, 多圈)：绝对发数网格上的一格
 static uint8_t trigger_planned = 0;      // 当前是否有有效轨迹在跑
 static uint8_t trigger_active = 0;       // 上一拍是否在主动驱动机构（退出沿清一次 PID 并锁位）
 // 连发收尾
-static float trigger_shot_origin = 0; // 本段的发数零点（规划时取网格起点），收尾轨迹据此对齐整数发
-static uint8_t trigger_burst = 0;     // 当前跑的是连发长轨迹（松手后需再走一条收尾轨迹才真正停）
-static uint8_t trigger_settling = 0;  // 正在走连发的收尾轨迹（终点为整数发边界、终点静止）
-/* 发数网格相位：规划终点锚定在它上面，而不是"实测 + span"（见 AppShootRun 规划分支的长注释）。
- * grid_pos = 上一次规划的**理论**终点；valid=0（开机首发的规划）会把网格锚到实测。 */
-static float trigger_grid_pos = 0;
+static uint8_t trigger_burst = 0;    // 当前跑的是连发长轨迹（松手后需再走一条收尾轨迹才真正停）
+static uint8_t trigger_settling = 0; // 正在走连发的收尾轨迹（终点为整数发边界、终点静止）
+/* 上一拍是否判为"卡住"：用来抓**脱困沿**（卡住→动起来）清速度环积分，见 §卡住保护 */
+static uint8_t trigger_stuck = 0;
+/* "卡住且输出顶在硬限幅附近"已连续保持的时长 (ms)：真卡死要**持续**超阈值才算，见 §卡住保护 */
+static float trigger_stuck_hold_ms = 0;
+/* 发数网格（见 app_shoot_def.h §发数网格）：参考位置恒为
+ *     trigger_grid_origin + trigger_ref_shot × TRIGGER_STEP_ADVANCE_RAD
+ * 锚点 trigger_grid_origin 只在开机第一发规划时锚一次（假设那时机构停在某个整数位置），
+ * **永不重锚**；trigger_ref_shot 就是"参考站在第几格"，每发规划只 **+= N**。
+ * ⚠ 参考**只前进、不看实测**：实测位置只当轨迹起点用。第四版拿"实测的最近格点"当基准，
+ *   机构少走超半格时参考会**后退一整发**（退弹），已推翻。 */
+static float trigger_grid_origin = 0;
+static int32_t trigger_ref_shot = 0;
 static uint8_t trigger_grid_valid = 0;
 
 /*============================================
@@ -239,7 +247,12 @@ void AppShootInit(void)
         .position_span = 6.2831853f, // 单圈 2π（M3508 编码器跨度）
         .position_offset = 0,
         .lpf_enable = DRVLIB_MOTOR_LPF_ENABLE, // 速度/电流低通
-        .lpf_rc = 0.02f,
+        /* 速度低通 20 ms → 5 ms（2026-10-11）：弹丸过轮的负载实测是 **~78 ms 的长浅凹陷**，20 ms
+         * 一阶低通意味着环路要等 20~40 ms 才"看见"掉速、最该补电流的那一段全在滞后里。降到 5 ms
+         * 后环路 5~10 ms 内响应；穿越处相位滞后（kp=0.2 对应 τ_cl≈40 ms、≈4 Hz）只有 ~7°，
+         * 不动稳定性。代价是反馈噪声抬高（原始转速逐拍 ±5%），经 kp=0.2 折算成电流纹波 ≈±0.7 A，
+         * 可接受。⚠ 观测通道 CH20/CH21 取的是 drvs 原始量，本来就绕过低通，不受本值影响。 */
+        .lpf_rc = 0.005f,
         .angle_feedforward_src = DRVLIB_MOTOR_FF_DISABLE, // 前馈来源
         .speed_feedforward_src = DRVLIB_MOTOR_FF_DISABLE,
         .current_feedforward_src = DRVLIB_MOTOR_FF_DISABLE,
@@ -251,8 +264,8 @@ void AppShootInit(void)
                 [DRVLIB_MOTOR_STAGE_SPEED] =
                     {
                         /* kp=0.2：去饱和后的闭环时间常数 τ_cl 基本由 kp 决定。实测 kp=0.1 时
-                         * τ_cl≈78 ms（≈12.8 rad/s 带宽），而 20 ms 速度 LPF 的极点 ≈50 rad/s 还在
-                         * 2 个数量级之外 —— 带宽瓶颈是 kp、不是滤波，故 kp 翻倍把 τ_cl 压到 ~40 ms，
+                         * τ_cl≈78 ms（≈12.8 rad/s 带宽），而速度 LPF 极点（现 5 ms → 200 rad/s）远在
+                         * 环路带宽之外 —— 带宽瓶颈是 kp、不是滤波，故 kp 翻倍把 τ_cl 压到 ~40 ms，
                          * 抗扰动带宽约翻倍（这是"抗扰动"唯一的直接杠杆）。
                          * 上升段（t10-90≈280 ms）本来就顶在驱动限幅上、与 kp 无关；实测 ripple 仅
                          * 0.16 rad/s，反馈干净，翻倍后信噪比仍充足。 */
@@ -320,16 +333,14 @@ void AppShootInit(void)
         .position_span = 6.2831853f, // 单圈 2π（M3508 编码器跨度），用于多圈累加
         .position_offset = 0,
         .lpf_enable = DRVLIB_MOTOR_LPF_ENABLE, // 速度/电流低通
-        /* 速度低通 5 ms（由 20 ms 下调）：极限环主频 6.5 Hz（41 rad/s）处，20 ms 一阶
-         * 低通要吃掉 atan(41×0.02)=39° 相位，是环路里最大的一处滞后。拨盘编码器反馈本身
-         * 很干净（静止段 meas 恒为 0.000，运行纹波仅 0.16 rad/s），没必要滤那么狠。
-         * 波特图上看，把 4 倍相位（≈28°）还给环路，是提高相位裕度最直接的一手。 */
-        .lpf_rc = 0.005f,
+        /* 速度低通 TRIGGER_SPEED_LPF_RC（20 → 5 → 3 ms）：这是环路里最大的一处相位滞后，
+         * 每次要提 TRIGGER_SPEED_KP 都得先从这里把相位还回来。取值与理由见宏定义处。 */
+        .lpf_rc = TRIGGER_SPEED_LPF_RC,
         .angle_feedforward_src = DRVLIB_MOTOR_FF_EXTERNAL, // 外环前馈 = 轨迹速度 (rad/s)
-        .speed_feedforward_src = DRVLIB_MOTOR_FF_DISABLE,  // 摩擦前馈下一轮再接
+        .speed_feedforward_src = DRVLIB_MOTOR_FF_EXTERNAL, // 摩擦前馈（库仑 + 起步一两拍的突破项）
         .current_feedforward_src = DRVLIB_MOTOR_FF_DISABLE,
         .angle_feedforward_ptr = &trigger_angle_ff,
-        .speed_feedforward_ptr = &trigger_friction_ff, // 预留（DISABLE 不读，保持指针有效即可）
+        .speed_feedforward_ptr = &trigger_friction_ff,
         .current_feedforward_ptr = NULL,
         .pid =
             {
@@ -348,20 +359,23 @@ void AppShootInit(void)
                 // 速度环：与摩擦轮同一套算法（变速积分 + 输出/积分限幅），量纲按拨盘
                 [DRVLIB_MOTOR_STAGE_SPEED] =
                     {
-                        /* kp=0.08。2026-10-10 实测：目标 20 rad/s 稳态是**持续极限环**，
-                         * 峰峰包络 35.4→8.4→6.9→6.2→7.8→7.4→7.1→8.3 —— 阶跃暂态 2.6 s 内
-                         * 衰减到 ~7，之后 18 s 平在 7~8 不衰减（真极限环，不是欠阻尼暂态）。
-                         * 关键：kp 从 0.2 降到 0.08，主频 13.2→6.5 Hz（正比于 kp，说明在环路
-                         * 穿越处），但**幅值几乎不变**。幅值不随增益走、只有频率随增益走，是
-                         * 非线性环节（摩擦/量化/死区）撑着极限环的签名，不是纯相位裕度问题。
-                         * 故 kp 维持 0.08，改从三处下手：降速度 LPF（还相位）、降 ki（减积分
-                         * 猎振）、改小前馈（消除被积分器反向抵消的恒定偏置）。 */
-                        .kp = 0.08, // 比例系数
-                        /* ki 由 1.0 降到 0.3：积分器零点是 ki/kp=12.5 rad/s（2 Hz），落在极限环
-                         * 频率（6.5 Hz）之下 —— 积分项在振荡频段仍贡献 atan(41/12.5)=73° 之外的
-                         * 那部分滞后，且数据里 i_out 一直在慢慢漂（积分器在猎振）。降到 0.3 后
-                         * 零点 3.75 rad/s（0.6 Hz），振荡频段积分项近似"纯 P"，滞后减到 ~5°。
-                         * 稳态差本就不大（1.5~2.8%），且 DC 摩擦已由前馈接管，不需要大 ki。 */
+                        /* kp = TRIGGER_SPEED_KP，2026-10-11 由 0.08 提到 0.2（用户："把拨盘的
+                         * 位置速度环调硬"）。旧值 0.08 的来历与代价（2026-10-10 开环力矩档实测）：
+                         * 目标 20 rad/s 稳态是**持续极限环**，峰峰包络 35.4→8.4→…→8.3 —— 阶跃
+                         * 暂态 2.6 s 内衰减到 ~7，之后 18 s 平在 7~8 不衰减（真极限环）。
+                         * 关键：kp 0.2→0.08 让主频 13.2→6.5 Hz（正比于 kp，说明在环路穿越处），
+                         * 但**幅值几乎不变** —— 幅值不随增益走、只有频率随增益走，是非线性环节
+                         * （摩擦/量化/死区）撑着极限环的签名，不是纯相位裕度问题；当时选择保稳定、
+                         * 弃刚度。现在闭环形态已不同（位置环在外、轨迹速度前馈在内），而收尾段的
+                         * 问题是**电流上不去**（见 TRIGGER_ANGLE_KP 的实测账），刚度比那点猎振要紧；
+                         * 相位损耗从速度 LPF 里还（TRIGGER_SPEED_LPF_RC 5→3 ms）。
+                         * ⚠ 若日志里出现低频猎振（CH6 在目标附近等幅振荡）或高频啸叫，先降 kp
+                         *   而不是降 LPF —— 见宏定义处的稳定上限估算。 */
+                        .kp = TRIGGER_SPEED_KP, // 比例系数
+                        /* ki 由 1.0 降到 0.3：积分器零点 ki/kp 落在极限环频率之下 —— 积分项在
+                         * 振荡频段近似"纯 P"，不额外贡献滞后。现在是 0.3/0.2 = 1.5 rad/s。
+                         * 稳态差本就不大（1.5~2.8%），且 DC 摩擦已由前馈接管，不需要大 ki；
+                         * ki 大了还会让**空闲期顶着静摩擦**的积分绕得更凶（见 §发数网格）。 */
                         .ki = 0.3,                       // 积分系数 (1/s)
                         .kd = 0,                         // 微分系数
                         .integral_limit = TRIGGER_I_MAX, // 积分限幅（防饱和）
@@ -392,6 +406,27 @@ void AppShootInit(void)
     LibFsmTableStart(&trigger_fsm);
 }
 
+/*---------------- 发数网格工具（参考自持，见 app_shoot_def.h §发数网格） ----------------
+ * 参考位置 = trigger_grid_origin + trigger_ref_shot × TRIGGER_STEP_ADVANCE_RAD，
+ * trigger_ref_shot 由发数累加、只增不减；实测位置不参与。 */
+/* 整数发号 → 网格上的绝对位置 (rad) */
+static float TriggerGridShotPos(int32_t n)
+{
+    return trigger_grid_origin + (float)n * TRIGGER_STEP_ADVANCE_RAD;
+}
+
+/* 不小于 pos 的最小格号（即 ceil）：给连发收尾找"前方那一格" */
+static int32_t TriggerGridCeilShot(float pos)
+{
+    float x = (pos - trigger_grid_origin) / TRIGGER_STEP_ADVANCE_RAD;
+    int32_t n = (int32_t)x; /* 向零截断：正数偏小、负数已 ≥ x */
+    if ((float)n < x)
+    {
+        n += 1;
+    }
+    return n;
+}
+
 ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
 {
     (void)time_stamp;
@@ -407,6 +442,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      * Config 的 motor_direction / feedback_direction **成对**声明（= 重定义正方向，闭环仍是负反馈）。
      * app 这里只传协议原始量、不再手写负号；⚠ 只反一个会变成正反馈。 */
     DrvsDJIMotorBroadcastData_s fm = DrvsDJIMotorBroadcastGetData(&friction_motor);
+    float friction_out = 0.0f; // 本拍下发给摩擦轮的电流指令 (A)：失能时恒 0，供 VOFA CH22 观测
     if (shoot_cmd2shoot_data.enable)
     {
         friction_motor_setref = FRICTION_SPEED_FULL;
@@ -417,7 +453,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
             .timestamp_us = fm.timestamp_us,
         };
         /* app 拿到的 dt 是**毫秒**（见 bsp_app.h 的 APP_TASK_DEF 语义），控制核要秒 */
-        float friction_out = DrvlibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, dt * 0.001f);
+        friction_out = DrvlibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, dt * 0.001f);
         DrvsDJIMotorBroadcastSetRef(&friction_motor, friction_out);
     }
     else // 之后考虑刹车
@@ -455,43 +491,42 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
         drive = 1;
         if (!trigger_planned || trigger_fsm_ctx.plan_request)
         {
-            /* 规划本段：从**当前实测**位置/速度出发，终点 = 起点 + N 份 TRIGGER_STEP_ADVANCE_RAD。
-             *   N：单发 1、三发 3、连发 TRIGGER_BURST_SHOTS（长轨迹，松手后另走一条收尾轨迹）。
-             *   vmax：连发取射频换算值（射频就是这么被定下来的）；单发/三发取老代码位置环上限
-             *   （122.17 rad/s），它们只有 13.4 / 40.2 rad 的行程，实际由 amax 决定快慢。
+            /* 规划本段：从**当前实测**位置/速度出发，终点 = **参考格号 + shots** 那一格。
+             *   shots：单发 1、三发 3、连发 TRIGGER_BURST_SHOTS（长轨迹，松手后另走一条收尾轨迹）。
+             *   vmax：连发取射频换算值（射频就是这么被定下来的）；单发/三发取轨迹上限
+             *   （100 rad/s），它们只有 13.4 / 40.2 rad 的行程，实际由 amax 决定快慢。
              * 起点速度取**实测**：连发收尾后紧接着再来一发时机构还在动，不能让轨迹从 v=0 起步。 */
             float p0 = (float)trigger_motor_ctrl.data.position;
             float v0 = trigger_motor_ctrl.data.speed;
-            float span = TRIGGER_STEP_ADVANCE_RAD;
+            int32_t shots = 1;
             float vmax = TRIGGER_TRAJ_VMAX;
             if (trigger_fsm_ctx.continuous)
             {
                 if (burst_now)
                 {
-                    span = TRIGGER_BURST_SHOTS * TRIGGER_STEP_ADVANCE_RAD;
+                    shots = (int32_t)TRIGGER_BURST_SHOTS;
                     vmax = TRIGGER_SPIN_SPEED;
                 }
                 else
                 {
-                    span = 3.0f * TRIGGER_STEP_ADVANCE_RAD;
+                    shots = 3;
                 }
             }
             trigger_burst = burst_now;
             trigger_settling = 0;
-            /* 终点锚定**理论网格**，而不是"实测 + span"：轨迹收尾时位置环有超调 —— 实测会冲过
-             * ref 终点约 0.04 发（收尾瞬间机构仍在动），而空闲态 ref 又锁实测、把这个超调固化。
-             * 若拿实测当基准，每发的超调都被下一发继承、逐发累积：实测 35 次单发后超前整整一格
-             * ≈ 多送一颗弹（数据证据 ignore/vofa+.csv，用 tools/analyze_trigger_spin.py 复现）。
-             * 锚在理论链上，每发的**理论**前进量恒为 span，超调由下一发的 p0 起点自动吸收。
-             * 偏离网格过大（手动转动/堵转之后）才重锚到实测，免得轨迹起点与终点错位。 */
-            if (!trigger_grid_valid || fabsf(p0 - trigger_grid_pos) > TRIGGER_GRID_RESYNC_RAD)
+            /* 网格锚点：**只在开机第一发规划时锚一次**（锚在当时的实测位置，当作格点 0），此后永不
+             * 重锚。无绝对编码器，只能假设"第一发开始时机构停在某个格点上"。
+             * 参考格号 += shots，目标 = 新格号那一格 —— **参考只前进、不看实测**（用户方案的原话：
+             * 无论实测超前还是滞后，都规划到下一个整数位置）。实测只当轨迹起点 p0，于是"落后多少"
+             * 自动变成"这一发多走多少"，天然补上，不需要任何网格追回。 */
+            if (!trigger_grid_valid)
             {
-                trigger_grid_pos = p0; // 重锚：本段从实测起算
+                trigger_grid_origin = p0;
+                trigger_ref_shot = 0;
+                trigger_grid_valid = 1;
             }
-            trigger_shot_origin = trigger_grid_pos; // 本段网格起点（连发收尾据此对齐整数发）
-            trigger_grid_pos += span;
-            trigger_target_pos = trigger_grid_pos;
-            trigger_grid_valid = 1;
+            trigger_ref_shot += shots;
+            trigger_target_pos = TriggerGridShotPos(trigger_ref_shot);
 
             LibTrajJerkPlan_Request_s req = {
                 .p0 = p0,
@@ -527,8 +562,8 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
 
         if (trigger_ref_out.finished)
         {
-            /* 整段轨迹跑完。**这就是唯一的收尾判据** —— 规划时 span = N×TRIGGER_STEP_RAD，
-             * 终点必落在整数发网格上，所以 finished 判据最干净、没有浮点边界问题（曾用"参考
+            /* 整段轨迹跑完。**这就是唯一的收尾判据** —— 规划时终点取的就是绝对网格上的一格
+             * （最近格 + shots 格），必落在整数发网格上，所以 finished 判据最干净、没有浮点边界问题（曾用"参考
              * 行程累计满一份 TRIGGER_STEP_RAD"数发，行程恰为整数发时最后一发数不上，三发打完
              * 卡死在发弹态，见转移表第 4 组注释）。
              *   单发/三发：一条轨迹 = 打完这 1 发/3 发 → 喂 step_done 让状态机收尾；
@@ -546,26 +581,17 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     else if (trigger_burst && fb_valid)
     {
         /* ---------- 连发松手/断开：走一条收尾轨迹停在**整数发边界**，而不是就地硬停 ----------
-         * 这一条正是"让整段轨迹的位置是整数发"的落地：收尾目标 = 起始 + k×TRIGGER_STEP_RAD，
-         * 终点静止。k 取"已走发数向上取整 + TRIGGER_BURST_STOP_MARGIN"，向上取整保证把当前这发
-         * 打完（停在半发位置会让下一发的相位全错），余量保证终点恒远在**前方** —— 否则会规划出
-         * "冲过头再倒回来"，而拨盘倒转会退弹。 */
+         * 收尾目标 = **参考格号**再往前的那一格（终点仍是整数格、终点静止），并把参考格号一起
+         * 更新过去，空闲期就锁在这一格。取"当前参考位置 + TRIGGER_BURST_STOP_MARGIN"**向上取整**：
+         * 向上取整保证把当前这发打完（停在半发位置会让下一发的相位全错），余量保证终点恒远在
+         * **前方** —— 否则 lib_traj_jerk 会因"行程短于减速距离"判不可行、参考冻在高速上。 */
         drive = 1;
         if (!trigger_settling)
         {
-            float x = (trigger_ref_out.position - trigger_shot_origin) / TRIGGER_STEP_ADVANCE_RAD + TRIGGER_BURST_STOP_MARGIN;
-            float k = (float)(int32_t)x; // 向下取整
-            if (k < x)
-            {
-                k += 1.0f; // → 向上取整
-            }
-            if (k < 1.0f)
-            {
-                k = 1.0f; // 刚进连发就松手：也把这发打完，不停在半个孔位上
-            }
+            trigger_ref_shot = TriggerGridCeilShot(trigger_ref_out.position + TRIGGER_BURST_STOP_MARGIN * TRIGGER_STEP_ADVANCE_RAD);
+            trigger_target_pos = TriggerGridShotPos(trigger_ref_shot);
             float p0 = (float)trigger_motor_ctrl.data.position;
             float v0 = trigger_motor_ctrl.data.speed;
-            trigger_target_pos = trigger_shot_origin + k * TRIGGER_STEP_ADVANCE_RAD;
 
             LibTrajJerkPlan_Request_s req = {
                 .p0 = p0,
@@ -590,7 +616,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
             LibTrajStep(&trigger_traj, trigger_dt_s, &trigger_ref_out);
             if (trigger_ref_out.finished)
             {
-                /* 停稳。本拍仍用终点参考驱动（drive 保持 1），下一拍才落回"锁实测位置"，
+                /* 停稳。本拍仍用终点参考驱动（drive 保持 1），下一拍才落回"锁最近格点"，
                  * 免得在最后一拍把设定值从终点位置跳回实测位置。 */
                 trigger_settling = 0;
                 trigger_burst = 0;
@@ -602,8 +628,8 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     else
     {
         /* ---------- 空闲（关/停止）或还没有 CAN 反馈 ----------
-         * 不驱动；设定值锁在实测位置：位置误差恒 0，只剩速度环对"被手推动"的阻尼，
-         * 既不主动找位置也不会失控。 */
+         * 不"主动走轨迹"；设定值锁在最近的发数格点上（见下面 ref 那一段），位置环只做小幅
+         * 相位回位（可能需要倒转）；还没有网格时退回锁实测。 */
         trigger_planned = 0;
         trigger_settling = 0;
         trigger_burst = 0;
@@ -617,9 +643,85 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     }
     trigger_active = drive;
 
-    /* 驱动时用上面的参考位置，空闲时设定值锁在实测位置（零误差） */
-    float trigger_ref = drive ? trigger_ref_out.position : (float)trigger_motor_ctrl.data.position;
+    /* ---------------- 摩擦前馈（见 app_shoot_def.h §拨盘摩擦前馈 / §静摩擦前馈） ----------------
+     * 库仑(动摩擦)项：只要有速度指令就给，顶住运行中那份摩擦。
+     * 静摩擦突破项：**只在原始转速≈0 时给**（绝对带宽）。它是"一脚把机构踢动"的脉冲，
+     *   原设计就写明"多给一拍就是一次加速冲击"，故判据必须窄到只覆盖起步那一两拍。
+     *   ⚠ **故意不复用 §卡住保护 的相对判据**：相对判据在整个带载爬行段（~150 ms）都为真，
+     *   用它给突破前馈就变成 6 A 的**持续**推力 —— 实测 CH19 在收尾段通断 7.9 次/发、每次摆 6 A，
+     *   等于往环路里灌一个电流方波激励（且那时机构已在 25 rad/s 上爬，这一脚本来也帮不上忙）。
+     * 判据与 §卡住保护 一样取 drvs 的**原始**转速、不走速度低通（低通 rc=20 ms 会把起步那一两拍
+     *   的"没动"抹掉，判据迟 2~3 拍才成立）。
+     * 方向取**目标速度**符号、不取实测转速：静摩擦时实测恒≈0，用它定符号会在 0 附近抖。
+     * 本值在 SetRef 之前赋值 —— 控制核在级联里读 `speed_feedforward_ptr`，晚赋值就晚一拍。 */
+    float trigger_ff_mag = 0.0f;
+    if (drive && fabsf(trigger_angle_ff) > TRIGGER_FRICTION_FF_EPS)
+    {
+        trigger_ff_mag = TRIGGER_FRICTION_FF;
+        if (fabsf(t.speed) < TRIGGER_FRICTION_FF_STATIC_BAND)
+        {
+            trigger_ff_mag += TRIGGER_FRICTION_FF_STATIC; // 起步那一两拍的一脚
+        }
+    }
+    trigger_friction_ff = (trigger_angle_ff >= 0.0f) ? trigger_ff_mag : -trigger_ff_mag;
+
+    /* 驱动时用上面的参考位置；空闲时设定值锁在**参考自己所在的那一格**上（不是实测位置）——
+     * 这是相位漂移的第二道闸（见 §发数网格）：收尾超调 / 带载滞后留下的偏差，会在空闲期被位置环
+     * 慢慢拉回格点，而不是像旧版"锁实测"那样把偏差固化成下一发的起点。
+     * ⚠ 基准是 **trigger_ref_shot** 而不是"实测的最近格点"：参考只前进、不看实测。第四版取实测的
+     *   最近格点，机构少走超半格时参考会**后退一整发**（退弹），已推翻。
+     * 还没有网格（开机首帧、或从未发过弹）时退回"锁实测"，与旧版一致。 */
+    float trigger_ref;
+    if (drive)
+    {
+        trigger_ref = trigger_ref_out.position;
+    }
+    else if (trigger_grid_valid)
+    {
+        trigger_ref = TriggerGridShotPos(trigger_ref_shot);
+    }
+    else
+    {
+        trigger_ref = (float)trigger_motor_ctrl.data.position;
+    }
     float trigger_out = DrvlibMotorSetRef(&trigger_motor_ctrl, trigger_ref, &trigger_fb, trigger_dt_s);
+
+    /* ---------------- 卡住判据（"要求它动、但机构没跟住"，口径见 app_shoot_def.h §卡住保护） ----------------
+     *   ① 期望要动：|前馈速度| > TRIGGER_STUCK_CMD_BAND（把轨迹的起停段排除在外）
+     *   ② 实际没跟住：|**原始**转速| < 绝对下限 + 比例 × |前馈速度|
+     * ②取原始转速的理由同上（低通是延迟）。判据在 SetRef **之后**算：切断那一路要看本拍输出。 */
+    uint8_t stuck_now = (uint8_t)(drive && fb_valid && (fabsf(trigger_angle_ff) > TRIGGER_STUCK_CMD_BAND) &&
+                                  (fabsf(t.speed) < TRIGGER_STUCK_SPEED_BAND + TRIGGER_STUCK_SPEED_RATIO * fabsf(trigger_angle_ff)));
+
+    /* ---------------- 卡住保护（真卡死切断）与脱困清积分（见 app_shoot_def.h §卡住保护） ----------------
+     * 卡住期间积分器**照常累积**（本方案的前提，别在这里把 ki 置 0），两个出口：
+     *   1) 输出**持续**顶在 TRIGGER_STUCK_CUT_A 以上 TRIGGER_STUCK_CUT_HOLD_MS → 判真卡死：
+     *      本拍输出清零 + 清积分，下一拍环路自然重来。加"持续"门槛是因为相对判据让"卡住"在带载
+     *      爬行段全程为真（~150 ms），单看瞬时电流会把正常推弹的尖峰也切掉。
+     *   2) 卡住 → 不卡住的**脱困沿** → 清积分，消掉"爬到突破值"的那股储能（否则脱困瞬间它变成
+     *      一股净加速电流把机构顶飞）。 */
+    uint8_t stuck_cut = 0; // 本拍是否真的切断了输出（VOFA CH15 用，须在清零 trigger_out **之前**判定）
+    if (stuck_now && (fabsf(trigger_out) > TRIGGER_STUCK_CUT_A))
+    {
+        trigger_stuck_hold_ms += dt; // dt 是毫秒，与 TRIGGER_STUCK_CUT_HOLD_MS 同量纲
+        if (trigger_stuck_hold_ms >= TRIGGER_STUCK_CUT_HOLD_MS)
+        {
+            stuck_cut = 1;
+            trigger_stuck_hold_ms = 0.0f;
+            trigger_out = 0.0f;                                            // 真卡死：本拍切断，下拍环路重来
+            trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out = 0.0f; // 这份储能不脱困也用不上了，一并清掉
+        }
+    }
+    else
+    {
+        trigger_stuck_hold_ms = 0.0f; // 离开"顶住"状态就复位 —— 本判据要求**连续**保持
+    }
+    if (trigger_stuck && !stuck_now)
+    {
+        trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out = 0.0f; // 脱困沿：清掉"爬到突破值"的储能
+    }
+    trigger_stuck = stuck_now; // stuck_now 已含 drive（非驱动拍恒 0），脱困沿只在一条轨迹内部成立
+
     float trigger_cmd = trigger_out; // 方向已由控制核的 motor_direction 修正，这里不再取负
 
     DrvsDJIMotorBroadcastSetRef(&trigger_motor, trigger_cmd);
@@ -639,7 +741,42 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      *   CH9  本拍 dt (ms)：确认控制周期；有跳变说明任务被拖或 CAN 掉帧
      *   CH10 状态机状态 (0关/1单发/2三发/3连发/4停止)
      *   CH11 驱动条件 enable && fire_mode!=off（等价于 enable 且 ch7 闭合）(0/1)
-     *   CH12 原始反馈转速 (rad/s，**电机极性**，未取反)：用于核对方向约定 */
+     *   CH12 原始反馈转速 (rad/s，**电机极性**，未取反)：用于核对方向约定
+     * ---- CH13~CH19：带负载整定用的控制核内部量（2026-10-11 加，调摩擦前馈/积分时看） ----
+     *   ⚠ **极性分两套，别混**：控制核内部量（CH13/14/16/17/18）都在 **app 正向域**，
+     *     只有 CH4 是**电机域**（控制核在返回前乘了 motor_direction）。故未饱和时
+     *         CH4 = −(CH13 + CH14 + CH19) （速度环 P + I + 摩擦前馈；d 项恒 0）
+     *         CH16 = CH17 + CH5           （位置环 ki=0，输出 = P + 前馈；触限时不等）
+     *     |CH13+CH14| > |CH4| 就是速度环**输出限幅饱和**（CH4 顶在 ±TRIGGER_I_MAX）。
+     *   CH13 速度环 P 项 p_out (A，app 正向)
+     *   CH14 速度环 I 项 i_out (A，app 正向) —— **摩擦前馈是否补到位的唯一判据**：补到位时它应
+     *        在 0 附近正负晃；系统性压在某一侧 = 前馈偏了。本通道也是"卡住保护清积分"的观测点
+     *        （脱困沿/切断拍会看到它被拉回 0）。
+     *   CH15 卡住保护状态：0=正常 / 1=卡住但输出未达阈值或未持续够时长（还在爬） /
+     *        2=卡住且**已持续**超过 TRIGGER_STUCK_CUT_HOLD_MS 并切断输出（见 §卡住保护）
+     *        —— 现在带载推弹全程都是 1（相对判据），看到 2 才是真卡死
+     *   CH16 位置环输出 = 速度环设定值 (rad/s，app 正向)：顶到 ±TRIGGER_ANGLE_VMAX = 位置环饱和
+     *   CH17 位置环 P 项 p_out (rad/s，app 正向，**未限幅**)：触限时它比 CH16 更能看出"想跑多快"
+     *   CH18 速度环误差 e = CH16 − CH6 (rad/s，app 正向)：|e| 落在哪一档决定变速积分的系数
+     *        （≤TRIGGER_VARINT_B=40 全积分 / 40~140 衰减 / >140 冻结），带负载掉速时看它
+     *   CH19 速度环前馈 = trigger_friction_ff (A)：库仑项 (TRIGGER_FRICTION_FF) 恒在，
+     *        原始转速≈0 的起步拍再叠加 TRIGGER_FRICTION_FF_STATIC —— 与 CH14 对照看是否补到位
+     *        （补到位则 CH14 趋 0），以及看突破项有没有在正常推弹/收尾段误触发
+     * ---- CH20~CH25：摩擦轮（**判断弹丸有没有真的过轮、什么时候过轮**，2026-10-11 加）----
+     * 判弹思路：摩擦轮空转恒速，弹丸被两轮夹着挤过去的那 2~5 ms 会**掉速**，速度环随即**顶电流**
+     *   补回来 —— 所以"过弹"的签名是 CH20 掉一个坑、CH21/CH22 冒一个尖、CH23（积分项）随后来一段
+     *   恢复。拨盘侧只能看到"走了多少角度"，弹丸到底出没出只能靠这一组。
+     * ⚠ **必须用 drvs 原始量（未低通）**：摩擦轮反馈在控制核里过 5 ms 低通、且乘了
+     *   feedback_direction，走 `data.speed` 已是低通后的值。故 CH20/CH21 取 `fm` 原始量并按 CH8
+     *   的约定取负到 app 正向；CH22~CH24 是控制核内部量，本来就是 app 正向，不用取负。
+     *   `DrvsDJIMotorBroadcastGetData()` 返回的**就是**协议原始量（drvs 明确不做滤波/方向/多圈）：
+     *   CH20 = int16 rpm × 2π/60、CH21 = int16 raw × a_per_lsb —— 不需要往 drvs 里再加通道。
+     * ⚠ 采样 500 Hz。实测弹丸过轮是 **~78 ms 的长浅凹陷**（转速只掉 ~3%、电流 0.4→1.2 A），
+     *   不是短促深坑 —— 判弹优先看 CH21/CH22 的平滑电流凸起与 CH23 的积分恢复，CH20 作辅助。
+     *   CH20 摩擦轮实测转速 (rad/s, app 正向, **未低通**)      CH21 摩擦轮实测电流 (A, app 正向, **未低通**)
+     *   CH22 摩擦轮速度环输出 = 实下发 (A, app 正向)            CH23 摩擦轮速度环 I 项 (A)
+     *   CH24 摩擦轮速度误差 (rad/s)                             CH25 摩擦轮使能且在线 (0/1)
+     *        —— CH25 用来区分"过弹时没有尖峰"和"摩擦轮根本没转"（enable 断开或 CAN 掉线） */
     VofaSetChannel(1, trigger_ref);
     VofaSetChannel(2, (float)trigger_motor_ctrl.data.position);
     VofaSetChannel(3, trigger_ref - (float)trigger_motor_ctrl.data.position);
@@ -652,6 +789,21 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(10, (float)LibFsmTableCurrent(&trigger_fsm));
     VofaSetChannel(11, (float)(shoot_cmd2shoot_data.enable && (shoot_cmd2shoot_data.fire_mode != fire_mode_off_e)));
     VofaSetChannel(12, t.speed); // 原始反馈转速 (rad/s)，电机极性
+    /* CH13~CH19：控制核内部量（app 正向域，见上面极性说明）。空闲拍仍照发，便于看停机后的残值 */
+    VofaSetChannel(13, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].p_out);
+    VofaSetChannel(14, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out);
+    VofaSetChannel(15, (float)(stuck_now ? (stuck_cut ? 2 : 1) : 0));
+    VofaSetChannel(16, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_ANGLE].output);
+    VofaSetChannel(17, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_ANGLE].p_out);
+    VofaSetChannel(18, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].error);
+    VofaSetChannel(19, trigger_friction_ff);
+    /* CH20~CH25：摩擦轮（判弹丸过轮，见上面通道表）。空闲拍仍照发，便于看停机后的残值 */
+    VofaSetChannel(20, -fm.speed);                                                      // 实测转速 (rad/s, app 正向, 未低通)
+    VofaSetChannel(21, -fm.current);                                                    // 实测电流 (A, app 正向, 未低通)
+    VofaSetChannel(22, friction_out);                                                   // 速度环输出 = 实下发 (A)
+    VofaSetChannel(23, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out);        // 速度环 I 项 (A)
+    VofaSetChannel(24, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].error);        // 速度误差 (rad/s)
+    VofaSetChannel(25, (float)(shoot_cmd2shoot_data.enable && (fm.timestamp_us != 0))); // 使能且在线
     VofaSend();
 
     // 3. 发送
