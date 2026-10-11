@@ -224,8 +224,12 @@ void AppShootInit(void)
 
     // 控制核：速度环（ref = rad/s → PID → 电流）
     DrvlibMotor_Config_s friction_motor_ctrl_cfg = {
-        .loop_type = DRVLIB_MOTOR_LOOP_SPEED,         // 速度闭环
-        .position_mode = DRVLIB_MOTOR_POS_CONTINUOUS, // 不用位置环（连续模式，不引入限幅）
+        .loop_type = DRVLIB_MOTOR_LOOP_SPEED, // 速度闭环
+        /* 安装方向（2026-10-10 看实机定，原为正向）：摩擦轮"正转"是另一个物理旋向。
+         * 反馈与输出**成对**取反（= 重定义正方向，闭环仍是负反馈）；只反一个会变成正反馈。 */
+        .motor_direction = DRVLIB_MOTOR_DIRECTION_REVERSE,    // 输出方向
+        .feedback_direction = DRVLIB_MOTOR_DIRECTION_REVERSE, // 反馈方向
+        .position_mode = DRVLIB_MOTOR_POS_CONTINUOUS,         // 不用位置环（连续模式，不引入限幅）
         .angle_limit_max = 0,
         .angle_limit_min = 0,
         .position_span = 6.2831853f, // 单圈 2π（M3508 编码器跨度）
@@ -302,7 +306,11 @@ void AppShootInit(void)
      * 摩擦/加速度前馈按计划留到下一轮（speed/current 两路仍 DISABLE，speed 指针先挂着备接）。 */
     DrvlibMotor_Config_s trigger_motor_ctrl_cfg = {
         .loop_type = DRVLIB_MOTOR_LOOP_ANGLE | DRVLIB_MOTOR_LOOP_SPEED, // 位置环 + 速度环
-        .position_mode = DRVLIB_MOTOR_POS_CONTINUOUS,                   // 多圈绝对角，不限幅不归一化
+        /* 安装方向（2026-10-10 看实机定）：拨盘"正转"是另一个物理旋向。与摩擦轮同一套 ——
+         * 反馈与输出**成对**取反（= 重定义正方向，闭环仍是负反馈）；只反一个会变成正反馈。 */
+        .motor_direction = DRVLIB_MOTOR_DIRECTION_REVERSE,    // 输出方向
+        .feedback_direction = DRVLIB_MOTOR_DIRECTION_REVERSE, // 反馈方向
+        .position_mode = DRVLIB_MOTOR_POS_CONTINUOUS,         // 多圈绝对角，不限幅不归一化
         .angle_limit_min = 0,
         .angle_limit_max = 0,
         .position_span = 6.2831853f, // 单圈 2π（M3508 编码器跨度），用于多圈累加
@@ -391,22 +399,22 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      * 使能：跑速度环（本阶段目标恒 = FRICTION_SPEED_FULL），反馈喂控制核、输出即电流；
      * 失能：不跑控制核，直接 0 A，并清一次 PID —— 否则冻结的积分会带着旧值，下次使能
      *       起步就是一脚踢。两种状态下电机都在收帧，C620 不掉线。
-     * 机械方向取反（2026-10-10 看实机定，原为正向）：摩擦轮"正转"应为另一个物理旋向。
-     * 手法与拨盘同一套 —— **反馈(position/speed/current)与输出一起取负**：等于重定义正方向，
-     * 闭环仍是负反馈、只是物理旋向翻转。⚠ 只反输出会变成正反馈（别那么改）。 */
+     * 机械方向（2026-10-10 看实机定，原为正向）：摩擦轮"正转"是另一个物理旋向 —— 由控制核
+     * Config 的 motor_direction / feedback_direction **成对**声明（= 重定义正方向，闭环仍是负反馈）。
+     * app 这里只传协议原始量、不再手写负号；⚠ 只反一个会变成正反馈。 */
     DrvsDJIMotorBroadcastData_s fm = DrvsDJIMotorBroadcastGetData(&friction_motor);
     if (shoot_cmd2shoot_data.enable)
     {
         friction_motor_setref = FRICTION_SPEED_FULL;
         DrvlibMotorFeedback_s friction_fb = {
-            .position = -fm.position,
-            .speed = -fm.speed,
-            .current = -fm.current,
+            .position = fm.position,
+            .speed = fm.speed,
+            .current = fm.current,
             .timestamp_us = fm.timestamp_us,
         };
         /* app 拿到的 dt 是**毫秒**（见 bsp_app.h 的 APP_TASK_DEF 语义），控制核要秒 */
         float friction_out = DrvlibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, dt * 0.001f);
-        DrvsDJIMotorBroadcastSetRef(&friction_motor, -friction_out);
+        DrvsDJIMotorBroadcastSetRef(&friction_motor, friction_out);
     }
     else // 之后考虑刹车
     {
@@ -417,13 +425,14 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     DrvsDJIMotorBroadcastGroupSend(&friction_motor_group);
 
     // ---- 拨盘：拨弹状态机 + jerk 受限轨迹位置环 ----
-    /* 机械方向取反（2026-10-10 看实机定）：拨盘"正转"应为另一个物理旋向，故**反馈与输出一起取负**
-     * （重定义正方向，闭环仍是负反馈；只反输出会变成正反馈，别那么改）。轨迹位置/速度都在这个
-     * "app 正向"帧里，规划起点直接用控制核处理后的**多圈**位置 data.position（已含取负与多圈累加）。 */
+    /* 机械方向（2026-10-10 看实机定）：拨盘"正转"是另一个物理旋向 —— 同样由控制核 Config 的
+     * motor_direction / feedback_direction **成对**声明（只反一个会变成正反馈），app 只传协议原始量。
+     * 轨迹位置/速度都在这个"app 正向"帧里，规划起点直接用控制核处理后的**多圈**位置 data.position
+     * （已含方向与多圈累加）。 */
     DrvsDJIMotorBroadcastData_s t = DrvsDJIMotorBroadcastGetData(&trigger_motor);
     DrvlibMotorFeedback_s trigger_fb = {
-        .position = -t.position,
-        .speed = -t.speed,
+        .position = t.position,
+        .speed = t.speed,
         .current = t.current,
         .timestamp_us = t.timestamp_us,
     };
@@ -595,7 +604,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     /* 驱动时用上面的参考位置，空闲时设定值锁在实测位置（零误差） */
     float trigger_ref = drive ? trigger_ref_out.position : (float)trigger_motor_ctrl.data.position;
     float trigger_out = DrvlibMotorSetRef(&trigger_motor_ctrl, trigger_ref, &trigger_fb, trigger_dt_s);
-    float trigger_cmd = -trigger_out; // app 正方向约定：实发值取负
+    float trigger_cmd = trigger_out; // 方向已由控制核的 motor_direction 修正，这里不再取负
 
     DrvsDJIMotorBroadcastSetRef(&trigger_motor, trigger_cmd);
     DrvsDJIMotorBroadcastGroupSend(&trigger_motor_group);
@@ -604,7 +613,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      *   CH1  参考位置 (rad，app 正向，多圈)          —— 位置环给定，三种模式都是同一条 lib_traj 轨迹
      *   CH2  实测位置 (rad，app 正向，多圈)          —— data.position，与 CH1 之差即跟踪误差
      *   CH3  位置误差 = CH1 - CH2 (rad)
-     *   CH4  实下发力矩指令 (Nm) = -SetRef 返回值
+     *   CH4  实下发力矩指令 (Nm) = SetRef 返回值（方向已含在控制核内）
      *   CH5  参考速度 (rad/s) —— 同时就是**外环速度前馈**。单发一步 13.4 rad、加/减速各需
      *        3.11 rad < 13.4，故够得到 vmax，是"加速-巡航-减速"的梯形包络；连发长轨迹除首尾
      *        两段外恒为巡航值 TRIGGER_SPIN_SPEED（= 射频换算值）
@@ -622,7 +631,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(5, trigger_angle_ff);
     VofaSetChannel(6, trigger_motor_ctrl.data.speed);
     VofaSetChannel(7, drive ? trigger_ref_out.acceleration : 0.0f);
-    VofaSetChannel(8, -t.current); // 实测电流 (A)，取反到 app 正向
+    VofaSetChannel(8, -t.current); // 实测电流 (A)，app 正向：drvs 原始量无方向，显式取负（未 LPF，保饱和判据）
     VofaSetChannel(9, dt);         // 本拍 dt (ms)：app 拿到的 dt 就是毫秒
     VofaSetChannel(10, (float)LibFsmTableCurrent(&trigger_fsm));
     VofaSetChannel(11, (float)(shoot_cmd2shoot_data.enable && (shoot_cmd2shoot_data.fire_mode != fire_mode_off_e)));
