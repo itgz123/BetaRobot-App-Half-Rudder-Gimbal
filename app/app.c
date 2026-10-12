@@ -46,9 +46,9 @@ TASK_INSTANCE_DEF(gimbal_task, GIMBAL_STACK_SIZE);
 TASK_INSTANCE_DEF(shoot_task, SHOOT_STACK_SIZE);
 
 /* 任务函数：周期任务框架（固定周期唤醒 + 执行耗时监控 + 超时计数） */
-APP_TASK_DEF(Cmd, CMD_FREQ_MS, AppCmdRun);
-APP_TASK_DEF(Gimbal, GIMBAL_FREQ_MS, AppGimbalRun);
-APP_TASK_DEF(Shoot, SHOOT_FREQ_MS, AppShootRun);
+APP_TASK_DEF(Cmd, CMD_FREQ_MS, AppCmdRun)
+APP_TASK_DEF(Gimbal, GIMBAL_FREQ_MS, AppGimbalRun)
+APP_TASK_DEF(Shoot, SHOOT_FREQ_MS, AppShootRun)
 
 static void create_queue(void)
 {

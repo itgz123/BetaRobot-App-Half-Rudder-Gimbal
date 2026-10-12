@@ -221,7 +221,7 @@ void AppGimbalInit(void)
         .pid_angle_setting = {},
         .pid_speed_setting = {},
         .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
-        .speed_lpf_rc = 0.1,
+        .speed_lpf_rc = 0.1f,
         .pos_max = M_PI,
         .t_range = 10,
         .vel_range = 30,
@@ -257,7 +257,7 @@ void AppGimbalInit(void)
         .pid_angle_setting = {},
         .pid_speed_setting = {},
         .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
-        .speed_lpf_rc = 0.004, // 截止~40Hz, kp=40时ωn=11.3Hz总滞后140°裕度30° (电机8.6ms延迟限定了高kp必振荡)
+        .speed_lpf_rc = 0.004f, // 截止~40Hz, kp=40时ωn=11.3Hz总滞后140°裕度30° (电机8.6ms延迟限定了高kp必振荡)
         .pos_max = M_PI,
         .t_range = 10,
         .vel_range = 30,
@@ -322,12 +322,12 @@ void AppGimbalInit(void)
             }, // 轴参数
         .sine_params =
             {
-                .amplitude = 0.2,
+                .amplitude = 0.2f,
                 .freq = 2,
             }, // 正弦参数
         .chirp_params =
             {
-                .amplitude_start = 0.1,
+                .amplitude_start = 0.1f,
                 .amplitude_end = 3,
                 .duration = 15,
                 .start_freq = 1,
@@ -335,12 +335,12 @@ void AppGimbalInit(void)
             }, // 扫频参数
         .multi_sine_params =
             {
-                .amplitude = 0.1,
+                .amplitude = 0.1f,
                 .duration = 1,
                 .num_freqs = 10,
-            },     // 多正弦叠加参数
-        .kp = 4,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
-        .kd = 0.4, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+            },      // 多正弦叠加参数
+        .kp = 4,    // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
+        .kd = 0.4f, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 
@@ -360,12 +360,12 @@ void AppGimbalInit(void)
             }, // 轴参数
         .sine_params =
             {
-                .amplitude = 0.4,
+                .amplitude = 0.4f,
                 .freq = 2,
             }, // 正弦参数
         .chirp_params =
             {
-                .amplitude_start = 0.1,
+                .amplitude_start = 0.1f,
                 .amplitude_end = 3,
                 .duration = 15,
                 .start_freq = 1,
@@ -373,12 +373,12 @@ void AppGimbalInit(void)
             }, // 扫频参数
         .multi_sine_params =
             {
-                .amplitude = 0.1,
+                .amplitude = 0.1f,
                 .duration = 1,
                 .num_freqs = 10,
-            },     // 多正弦叠加参数
-        .kp = 1,   // 位置增益
-        .kd = 0.1, // 速度增益
+            },      // 多正弦叠加参数
+        .kp = 1,    // 位置增益
+        .kd = 0.1f, // 速度增益
         // yaw 是 WRAP 环绕轴（±π 归一化）：误差需取最短路径，否则边界处跳变
         .error_normalize_range = 2.0f * M_PI, // 误差 wrap 到 [-π, π)
         .error_normalize_enable = 1,          // 启用环绕误差归一化
@@ -559,10 +559,10 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         {
             pitchdown_kd = 2;
         }
-        pitchdown_motor_setref = 2.2 +                                                       // 固定值
-                                 1.0 * (pitchdown_position_max - pitchdown_mdata.position) + // 约等于重力前馈
-                                 pitchdown_kd * (2 - pitchdown_mdata.speed) +                // 速度误差项
-                                 diejia_pitchup_motor_setref;                                // pitchup单向
+        pitchdown_motor_setref = 2.2f +                                                              // 固定值
+                                 1.0f * (pitchdown_position_max - (float)pitchdown_mdata.position) + // 约等于重力前馈
+                                 pitchdown_kd * (2 - pitchdown_mdata.speed) +                        // 速度误差项
+                                 diejia_pitchup_motor_setref;                                        // pitchup单向
     }
     // setref-yaw
     if (yaw_on)
@@ -594,11 +594,11 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      *     cmd 侧切过来后，底盘跟随改用 yaw_motor_position/yaw_motor_vel 即可。 */
     gimbal2cmd_data_t gimbal2cmd_data = {
         .state = gimbal_state, // 云台实际姿态（cmd 可拿去判"云台到没到位/在不在动作中"）
-        .pitch_position = pitchup_mdata.position,
+        .pitch_position = (float)pitchup_mdata.position,
         .pitch_vel = pitchup_mdata.speed,
         .yaw_position = imu_data.euler.yaw,
         .yaw_vel = imu_data.yaw_rate,
-        .pitch_down_position = pitchdown_mdata.position,
+        .pitch_down_position = (float)pitchdown_mdata.position,
         .yaw_motor_position = (float)yaw_mdata.position,
         .yaw_motor_vel = yaw_mdata.speed,
     };
