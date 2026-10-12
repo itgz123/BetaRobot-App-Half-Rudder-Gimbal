@@ -157,7 +157,7 @@
  *   想压收尾误差请调上面 §轨迹上限 的柔和度（vmax/amax/jmax），本项保持 1.0。
  *   唯一改动本项的理由：机械换拨盘/孔数后需要按新步距整体缩放（这种情况应改 robot_def.h 的
  *   TRIGGER_STEP_RAD，而不是这里）。 */
-#define TRIGGER_STEP_ADVANCE_SCALE 2.0f
+#define TRIGGER_STEP_ADVANCE_SCALE 1.0f
 #define TRIGGER_STEP_ADVANCE_RAD (TRIGGER_STEP_RAD * TRIGGER_STEP_ADVANCE_SCALE)
 
 #define TRIGGER_SPIN_SPEED TRIGGER_SPEED_MAX // 连发巡航速度 (rad/s) = 射频 × 每发转角 ≈ 80.81
