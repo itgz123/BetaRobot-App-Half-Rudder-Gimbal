@@ -48,7 +48,8 @@ static uint8_t trigger_stuck = 0;
 static float trigger_stuck_hold_ms = 0;
 /* 发数网格（见 app_shoot_def.h §发数网格）：参考位置恒为
  *     trigger_grid_origin + trigger_ref_shot × TRIGGER_STEP_ADVANCE_RAD
- * 锚点 trigger_grid_origin 只在开机第一发规划时锚一次（假设那时机构停在某个整数位置），
+ * 锚点 trigger_grid_origin 只在开机第一发规划时锚一次（= 那时实测位置 + TRIGGER_GRID_OFFSET_HOLES 的
+ * 机械相位偏移，见 app_shoot_def.h），
  * **永不重锚**；trigger_ref_shot 就是"参考站在第几格"，每发规划只 **+= N**。
  * ⚠ 参考**只前进、不看实测**：实测位置只当轨迹起点用。第四版拿"实测的最近格点"当基准，
  *   机构少走超半格时参考会**后退一整发**（退弹），已推翻。 */
@@ -514,14 +515,17 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
             }
             trigger_burst = burst_now;
             trigger_settling = 0;
-            /* 网格锚点：**只在开机第一发规划时锚一次**（锚在当时的实测位置，当作格点 0），此后永不
-             * 重锚。无绝对编码器，只能假设"第一发开始时机构停在某个格点上"。
+            /* 网格锚点：**只在开机第一发规划时锚一次**（锚在当时的实测位置 + TRIGGER_GRID_OFFSET_HOLES
+             * 的机械相位偏移，当作格点 0），此后永不重锚。无绝对编码器，只能假设"第一发开始时机构停在
+             * 某个格点上"——偏移量就是这个假设的修正（相位扫描实验用）。
              * 参考格号 += shots，目标 = 新格号那一格 —— **参考只前进、不看实测**（用户方案的原话：
              * 无论实测超前还是滞后，都规划到下一个整数位置）。实测只当轨迹起点 p0，于是"落后多少"
              * 自动变成"这一发多走多少"，天然补上，不需要任何网格追回。 */
             if (!trigger_grid_valid)
             {
-                trigger_grid_origin = p0;
+                /* 格点 0 = 上电位置 + 机械相位偏移（TRIGGER_GRID_OFFSET_HOLES 孔，见 app_shoot_def.h）。
+                 * 偏移是机械量、与步距系数无关，故乘 TRIGGER_STEP_RAD 而不是 TRIGGER_STEP_ADVANCE_RAD。 */
+                trigger_grid_origin = p0 + TRIGGER_GRID_OFFSET_HOLES * TRIGGER_STEP_RAD;
                 trigger_ref_shot = 0;
                 trigger_grid_valid = 1;
             }
