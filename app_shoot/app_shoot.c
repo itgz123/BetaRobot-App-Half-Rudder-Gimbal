@@ -454,7 +454,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
         };
         /* app 拿到的 dt 是**毫秒**（见 bsp_app.h 的 APP_TASK_DEF 语义），控制核要秒 */
         friction_out = DrvlibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, dt * 0.001f);
-        DrvsDJIMotorBroadcastSetRef(&friction_motor, friction_out);
+        DrvsDJIMotorBroadcastSetRef(&friction_motor, 0); // friction_out
     }
     else // 之后考虑刹车
     {
@@ -470,12 +470,8 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      * 轨迹位置/速度都在这个"app 正向"帧里，规划起点直接用控制核处理后的**多圈**位置 data.position
      * （已含方向与多圈累加）。 */
     DrvsDJIMotorBroadcastData_s t = DrvsDJIMotorBroadcastGetData(&trigger_motor);
-    DrvlibMotorFeedback_s trigger_fb = {
-        .position = t.position,
-        .speed = t.speed,
-        .current = t.current,
-        .timestamp_us = t.timestamp_us,
-    };
+    /* 反馈结构体 trigger_fb 在下面 SetRef 前才构造 —— #if CMD_DEBUG_CHASSIS_ONLY 下位置环
+     * 整段旁路、用不到它，放这里会是个未使用变量。 */
 
     /* 状态机先刷 ch7 边沿（可能进入发弹状态并置 plan_request），再决定本拍怎么走 */
     TriggerFsmUpdate();
@@ -665,13 +661,21 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     }
     trigger_friction_ff = (trigger_angle_ff >= 0.0f) ? trigger_ff_mag : -trigger_ff_mag;
 
+    float trigger_ref;
+#if CMD_DEBUG_CHASSIS_ONLY
+    /* 调试底盘（见 app_cfg.h）：拨盘也只发 0 力矩 —— 位置环整段旁路。
+     * 本文件不读 cmd 的 enable（拨盘只看 fire_mode），光靠 cmd 下发 fire_mode=off 仍会锁格点闭环，
+     * 故这道门控必须在这里。不调控制核也就没有积分残留（本宏下驱动核从头到尾不被使用），无需 Reset。
+     * trigger_ref 在调试下没有参考可言，取实测位置占位 —— VOFA CH1/CH3 仍照发（CH3 恒 0）。 */
+    trigger_ref = (float)trigger_motor_ctrl.data.position;
+    float trigger_out = 0.0f;
+#else
     /* 驱动时用上面的参考位置；空闲时设定值锁在**参考自己所在的那一格**上（不是实测位置）——
      * 这是相位漂移的第二道闸（见 §发数网格）：收尾超调 / 带载滞后留下的偏差，会在空闲期被位置环
      * 慢慢拉回格点，而不是像旧版"锁实测"那样把偏差固化成下一发的起点。
      * ⚠ 基准是 **trigger_ref_shot** 而不是"实测的最近格点"：参考只前进、不看实测。第四版取实测的
      *   最近格点，机构少走超半格时参考会**后退一整发**（退弹），已推翻。
      * 还没有网格（开机首帧、或从未发过弹）时退回"锁实测"，与旧版一致。 */
-    float trigger_ref;
     if (drive)
     {
         trigger_ref = trigger_ref_out.position;
@@ -684,7 +688,14 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     {
         trigger_ref = (float)trigger_motor_ctrl.data.position;
     }
+    DrvlibMotorFeedback_s trigger_fb = {
+        .position = t.position,
+        .speed = t.speed,
+        .current = t.current,
+        .timestamp_us = t.timestamp_us,
+    };
     float trigger_out = DrvlibMotorSetRef(&trigger_motor_ctrl, trigger_ref, &trigger_fb, trigger_dt_s);
+#endif
 
     /* ---------------- 卡住判据（"要求它动、但机构没跟住"，口径见 app_shoot_def.h §卡住保护） ----------------
      *   ① 期望要动：|前馈速度| > TRIGGER_STUCK_CMD_BAND（把轨迹的起停段排除在外）
@@ -724,7 +735,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
 
     float trigger_cmd = trigger_out; // 方向已由控制核的 motor_direction 修正，这里不再取负
 
-    DrvsDJIMotorBroadcastSetRef(&trigger_motor, trigger_cmd);
+    DrvsDJIMotorBroadcastSetRef(&trigger_motor, 0); // trigger_cmd
     DrvsDJIMotorBroadcastGroupSend(&trigger_motor_group);
 
     /* 调试：拨盘**参考位置环**观测通道（本块自己发帧；app_gimbal 的 IMU 那路 VOFA 已关）。

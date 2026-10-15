@@ -268,6 +268,7 @@ static void input_update(void)
 }
 
 /*======== 处理层：统一上下文 → 各执行器设定值 =========*/
+#if !CMD_DEBUG_CHASSIS_ONLY
 /* 底盘自转速度 w (rad/s)：底盘是云台的纯伺服机构，只执行 (enabled, vx, vy, w)，
  * 模式相关的 w 全部在这里按状态机算好再发下去。
  *   normal / hole：跟随——把"云台相对底盘的角度"θ 拉回 0，底盘即转回云台指向
@@ -314,6 +315,7 @@ static float chassis_w_from_mode(float theta, float yaw_rate_cmd)
     // 超出底盘能跟上的能力，限幅既防打滑也防标定发散的抖动
     return Lib_Math_Clamp(w, -chassis_follow_w_limit, chassis_follow_w_limit);
 }
+#endif // !CMD_DEBUG_CHASSIS_ONLY
 
 /*======== 发送层 =========*/
 // 给云台（队列）：统一上下文 → 位置/速度/加速度
@@ -327,6 +329,16 @@ static void send_gimbal(void)
     cmd_cmd2gimbal_data.yaw_x = 0.0f;
     cmd_cmd2gimbal_data.yaw_v = 0.0f;
     cmd_cmd2gimbal_data.yaw_a = 0.0f;
+
+#if CMD_DEBUG_CHASSIS_ONLY
+    /* 调试底盘（见 app_cfg.h）：云台三轴只发 0 力矩 —— mode 恒 stop，app_gimbal 状态机
+     * 进失能、三轴 setref 清零（电机保持使能，仍收零力矩帧）。规划器与视觉分支一并旁路：
+     * 云台不动作，累加器也不必被推进。仍记一次控制源，取消本宏后首个交还拍不会误判边沿。 */
+    cmd_cmd2gimbal_data.mode = robot_mode_stop;
+    cmd_last_control_type = cmd_ctx.type;
+    xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data);
+    return;
+#endif
 
     /* 规划器位置累加器的播种条件（planner 内部为开环累加，不读反馈，故需显式重新锚定）：
      *   ① 失能期间每拍播种：累加器持续跟随反馈，使能首拍目标 = 当前实际位置，不突变。
@@ -397,9 +409,35 @@ static void send_gimbal(void)
  * 三个模式都旋：gyro 档底盘在自转，若用车身系向量，推"前"会变成绕圈跑；
  * 旋转后不管车身转到哪个角度，推前都是朝准星方向直线平移。
  * 正常模式下车身本来就在被 w 拉向云台，θ 只是跟随滞后剩下的那点小角度，
- * 旋转量很小；等 θ 收敛到 0 就与"直接发车身系 vx/vy"等价。 */
+ * 旋转量很小；等 θ 收敛到 0 就与"直接发车身系 vx/vy"等价。
+ * 调试底盘（CMD_DEBUG_CHASSIS_ONLY）下不做 θ 旋转，w 也不由状态机解 ——
+ * 改成由空出来的云台 yaw 摇杆通道直接控，见下面的分支。 */
 static void send_chassis(void)
 {
+    /* 底盘速度旋钮调速：ch8 (-1~1) 映射成本拍可用的平动最大速度
+     *   knob = -1 → chassis_translate_speed_min（慢速档）
+     *   knob = +1 → chassis_translate_speed（全速档）
+     * 摇杆只决定方向与在该上限内的比例，满舵 = 该档位的最大速度。
+     * 同一个旋钮在 gyro 档也缩放自转角速度，两处上限各自独立（见 chassis_w_from_mode）。 */
+    float translate_speed = knob_scale(cmd_ctx.chassis_speed_channel, chassis_translate_speed_min, chassis_translate_speed);
+    // 摇杆速度向量 (vx 前+、vy 左+)：正常路径下先按"云台指向坐标系"取，再由下面的 θ 转到车身系
+    float vx_stick = channel_deadzone(cmd_ctx.chassis_vx_channel) * translate_speed;
+    float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * translate_speed;
+
+    gimbal2chassis_data.enabled = cmd_ctx.mode; // robot_mode_stop = 失能
+
+#if CMD_DEBUG_CHASSIS_ONLY
+    /* 调试底盘（见 app_cfg.h）：摇杆向量不按云台夹角旋转，直接按车身系发下去 ——
+     * 推前就是车头方向，底盘不再追云台。
+     * w 改由**云台 yaw 那个摇杆通道**直接控制（这个模式下它空着，正好拿来转车身）：
+     *   摇杆 -1~1 → 自转角速度，大小仍由速度旋钮按 gyro 档那套缩放；
+     *   取负与云台 yaw 的约定保持一致（两边都是逆时针为正），摇杆物理转向不变；
+     *   死区照吃，摇杆回中 = 不转。若实车方向相反，把这里的负号去掉。 */
+    gimbal2chassis_data.vx = vx_stick;
+    gimbal2chassis_data.vy = vy_stick;
+    gimbal2chassis_data.w =
+        channel_deadzone(cmd_ctx.gimbal_yaw_channel) * knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
+#else
     /* 云台指向相对底盘前进方向的真实夹角 θ (rad)，逆时针为正。
      * 取 yaw 电机编码器关节角（云台相对底盘）再减掉机械零位偏置：装配后编码器零位
      * 与"云台指向 = 底盘前进方向"对不齐，差的就是 chassis_gimbal_offset
@@ -411,21 +449,11 @@ static void send_chassis(void)
     float theta = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
     float c = Lib_Math_Cos(theta);
     float s = Lib_Math_Sin(theta);
-    /* 底盘速度旋钮调速：ch8 (-1~1) 映射成本拍可用的平动最大速度
-     *   knob = -1 → chassis_translate_speed_min（慢速档）
-     *   knob = +1 → chassis_translate_speed（全速档）
-     * 摇杆只决定方向与在该上限内的比例，满舵 = 该档位的最大速度。
-     * 同一个旋钮在 gyro 档也缩放自转角速度，两处上限各自独立（见 chassis_w_from_mode）。 */
-    float translate_speed = knob_scale(cmd_ctx.chassis_speed_channel, chassis_translate_speed_min, chassis_translate_speed);
-    // 摇杆 → 云台指向坐标系下的速度向量 (vx 前+、vy 左+)
-    float vx_stick = channel_deadzone(cmd_ctx.chassis_vx_channel) * translate_speed;
-    float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * translate_speed;
-
-    gimbal2chassis_data.enabled = cmd_ctx.mode; // robot_mode_stop = 失能
     gimbal2chassis_data.vx = c * vx_stick - s * vy_stick;
     gimbal2chassis_data.vy = s * vx_stick + c * vy_stick;
     // w 含云台指令角速度前馈（同拍由 send_gimbal 写入 cmd_gimbal_yaw_rate_cmd）
     gimbal2chassis_data.w = chassis_w_from_mode(theta, cmd_gimbal_yaw_rate_cmd);
+#endif
 
     CommSend(&chassis_comm, (uint8_t *)&gimbal2chassis_data);
 }
@@ -433,6 +461,12 @@ static void send_chassis(void)
 // 给射击（队列）
 static void send_shoot(void)
 {
+#if CMD_DEBUG_CHASSIS_ONLY
+    /* 调试底盘（见 app_cfg.h）：发射只发 0 力矩 —— enable=0 让摩擦轮直接 0 电流，
+     * fire_mode=off 关掉拨弹状态机；拨盘那一路不看 enable，由 app_shoot.c 的同一个宏切成 0。 */
+    cmd_cmd2shoot_data.enable = 0;
+    cmd_cmd2shoot_data.fire_mode = fire_mode_off_e;
+#else
     /* 摩擦轮使能 = 总开关(ch4) 开着 且 云台已经立到直立位：
      *   - ch4 断开 / 遥控掉线 → 失能（掉线时 sbus 数据是陈旧的，按"全部失能"的既有约定处理）；
      *   - 云台在 失能/立起中/倒下中/倒下 → 失能，避免云台还没立起来/过洞收着就把弹打出去。
@@ -440,6 +474,7 @@ static void send_shoot(void)
     uint8_t remote_on = (sbus_inst.daemon->is_online == 1) && (sbus_inst.sbus_data.ch[SBUS_CH_ENABLE] > sbus_half);
     cmd_cmd2shoot_data.enable = (uint8_t)(remote_on && (cmd_gimbal2cmd_data.state == gimbal_state_stand_e));
     cmd_cmd2shoot_data.fire_mode = cmd_ctx.fire_mode; // ch7 电平已内含：off = ch7 断开（或 ch4 关/掉线）
+#endif
     /* fire_rate 与两个裁判校准量暂无来源（射频标定、裁判消息链路都还没接），
      * cmd_cmd2shoot_data 是文件级 static，零初始化后没人写过 → 这里保持 0。 */
     xQueueOverwrite(cmd2shoot_queue_handle, &cmd_cmd2shoot_data);
