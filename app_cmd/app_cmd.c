@@ -436,7 +436,7 @@ static void send_chassis(void)
     gimbal2chassis_data.vx = vx_stick;
     gimbal2chassis_data.vy = vy_stick;
     gimbal2chassis_data.w =
-        channel_deadzone(cmd_ctx.gimbal_yaw_channel) * knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
+        -channel_deadzone(cmd_ctx.gimbal_yaw_channel) * knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
 #else
     /* 云台指向相对底盘前进方向的真实夹角 θ (rad)，逆时针为正。
      * 取 yaw 电机编码器关节角（云台相对底盘）再减掉机械零位偏置：装配后编码器零位

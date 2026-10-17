@@ -12,6 +12,7 @@
 /* 云台→底盘（13B）与底盘→云台（12B）各一结构体；两端定义须字节对齐
  * （COMM_DEF 内 _Static_assert 校验 sizeof == 约定线长）。
  * 本板（云台）在 app_cmd.c 收发包，对端定义见 app/half_rudder_chassis/app/app.h。 */
+// 方向定义，vx>0:前;xy>0:左;w>0:俯视逆时针
 typedef struct
 {
     robot_mode enabled;
