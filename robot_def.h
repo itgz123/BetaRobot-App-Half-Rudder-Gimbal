@@ -19,18 +19,22 @@
 #define yaw_acceleration 10.0f
 
 // 底盘平动，旋转速度(m/s,rad/s)
-#define chassis_translate_speed 6.0f       // 平动最大速度：速度旋钮打到最大档时，摇杆通道满量程对应的平动速度
-#define chassis_translate_speed_min 1.0f   // 平动最小速度：速度旋钮打到最小档时，摇杆通道满量程对应的平动速度
-#define chassis_gyro_rotate_speed 12.0f    // 小陀螺最大转速：旋转速度旋钮打到最大档时，gyro(小陀螺)档底盘的自转角速度
-#define chassis_gyro_rotate_speed_min 1.0f // 小陀螺最小转速：旋转速度旋钮打到最小档时的自转角速度
-#define chassis_follow_w_limit 4.0f        // normal/hole 档跟随 w（比例项+前馈之和）的限幅
+#define chassis_translate_speed 6.0f       // 平动速度上限：档位 +1（原速度旋钮最大档）时的满舵平动速度
+#define chassis_translate_speed_min 1.0f   // 平动速度下限：档位 -1（原速度旋钮最小档）时的满舵平动速度
+#define chassis_gyro_rotate_speed 12.0f    // 小陀螺转速上限：档位 +1 时 gyro 档底盘的自转角速度
+#define chassis_gyro_rotate_speed_min 1.0f // 小陀螺转速下限：档位 -1 时的自转角速度
+/* 原 ch8 速度旋钮已改作视觉开关，档位固定为 0 ⇒ 上述两组上下限都取中点。 */
+#define chassis_follow_w_limit 4.0f // normal/hole 档跟随 w（比例项+前馈之和）的限幅
 
 /* normal/hole 档底盘跟随云台的比例系数 [1/s]：
  * w = chassis_follow_kp * wrap(云台相对底盘的 yaw 角) + 前馈项（见下面 chassis_follow_ff），
  * 把云台相对底盘的角度拉回 0，即"硬跟随"的转动部分
  * （平移方向部分见下面 chassis_gimbal_offset 与 app_cmd 的向量旋转）。
- * TODO 实车标定：先架空轮子确认转向（反向则改为负值），再从 1 左右往上加到跟得上又不抖。 */
-#define chassis_follow_kp -3.0f
+ * 符号：θ 与底盘 w 都已统一为"逆时针为正"（yaw 电机 feedback/motor 双向镜像，
+ *   底盘侧 w>0 也已实测为俯视逆时针）⇒ 云台偏左(θ>0)时底盘要逆时针追上，kp 取正。
+ *   旧值是 -3.0，那是底盘侧语义还没统一时用实车试出来的反向补偿；语义规范后它会
+ *   让底盘往远离云台的方向转（表现为"底盘 w 反向"）。 */
+#define chassis_follow_kp 3.0f
 
 /* normal/hole 档底盘跟随云台的速度前馈系数（无量纲，理想值 1.0）。
  *
@@ -42,10 +46,10 @@
  * 带来的 θ 变化：底盘与云台同步转，θ 不再被拉开，kp 只负责收拾残余误差。
  *   |ff| = 1.0：完全前馈，底盘与云台指令同速（推荐起点）
  *   |ff| < 1  ：保留少量跟随滞后；|ff| > 1 或标定失真会超调/画龙
- * 符号不是推导出来的而是实车定的：本车的关节角/世界系航向实际符号与注释里的
- * "逆时针为正"相反（kp 也是因此取的负），所以 ff 同样取负。标定时和 chassis_follow_kp
- * 一起看：两者必须同号，否则前馈是在帮倒忙（把 θ 越推越大）。 */
-#define chassis_follow_ff -1.0f
+ * 符号：ω_yaw 与底盘 w 同是"逆时针为正"，ff 必须为正。旧值 -1.0 是底盘侧语义统一前
+ * 的反向补偿——它把前馈变成了正反馈（云台往左转、底盘往右转）。
+ * 标定时和 chassis_follow_kp 一起看：两者必须同号，否则前馈是在帮倒忙（把 θ 越推越大）。 */
+#define chassis_follow_ff 1.0f
 
 /* 跟随死区 (rad)：|云台相对底盘角 θ| 小于该值时不再跟随（比例项给 0）。
  * 用途：云台停在某个角度不动时，编码器噪声 + 传动回差会让 θ 在 0 附近来回抖，

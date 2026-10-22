@@ -99,7 +99,7 @@
  *   "定义即打开"的写法相反；调试完改回 0。
  * 落地两处：app_cmd.c 门控下发量（云台 stop / 发射 off / 底盘直通），
  *           app_shoot.c 门控拨盘输出（拨盘不看 enable，光靠 cmd 下发做不到 0 力矩）。 */
-#define CMD_DEBUG_CHASSIS_ONLY 0
+#define CMD_DEBUG_CHASSIS_ONLY 1
 
 /* 关闭 */
 

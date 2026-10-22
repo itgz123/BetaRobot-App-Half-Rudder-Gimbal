@@ -41,18 +41,21 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 #define FIRE_MODE_SEG (1.0f / 3.0f)
 
 /* SBUS 通道分配（0 基；摇杆 -1~1，三档开关 -1/0/+1，旋钮 -1~1）
- * 注：README「操作逻辑」一节写的拨杆号与代码不一致（那里把自瞄放在第 7 路、
- *     第 5 路未用），这里以实机在用的映射为准。 */
+ * 注：README「操作逻辑」一节写的拨杆号与代码不一致，这里以实机在用的映射为准。 */
 #define SBUS_CH_VY 0        // 右摇杆左右 → 底盘 vy
 #define SBUS_CH_VX 1        // 右摇杆前后 → 底盘 vx
 #define SBUS_CH_PITCH 2     // 左摇杆上下 → 云台 pitch
 #define SBUS_CH_YAW 3       // 左摇杆左右 → 云台 yaw
 #define SBUS_CH_ENABLE 4    // 总开关：上 = 使能
-#define SBUS_CH_AIM 5       // 自瞄开关：与视觉"有目标"同时成立才把云台交给视觉
+#define SBUS_CH_SUPER_CAP 5 // 超电开关（两段）：上 = 使能，经底盘-云台链路转发给底盘
 #define SBUS_CH_MODE 6      // 档位开关（三档）：normal / gyro / hole
 #define SBUS_CH_FIRE 7      // 开火总闸（两段开关）：0 = 关，1 = 由下面这个旋钮选模式
-#define SBUS_CH_SPEED 8     // 底盘速度旋钮：同时缩放平动最大速度与 gyro(小陀螺)档自转角速度（最小档 ~ 最大档）
+#define SBUS_CH_VISION 8    // 视觉控制开关（两段）：上 = 允许视觉接管云台（仍需视觉报有目标）
 #define SBUS_CH_FIRE_MODE 9 // 发射模式旋钮：ch7=1 时把 -1~1 等分三段选 单发/三连发/全自动（非回中，无死区）
+
+/* 原 ch8 速度旋钮已改作视觉开关：底盘平动与小陀螺速度固定取旋钮中位，
+ * 即归一化通道值 0（knob_scale(0) = 速度区间中点），不再随遥控变化。 */
+#define SBUS_SPEED_CHANNEL_FIXED 0.0f
 
 /*============================================
  *              枚举
@@ -76,17 +79,18 @@ typedef struct
 {
     cmd_control_type type; // 本帧生效的控制源
 
-    robot_mode mode;       // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
-    uint8_t fire;          // 开火总闸（ch7）：0 = 关
-    fire_mode_e fire_mode; // 发射模式：fire=0 → 关；fire=1 → ch9 三段解出 单发/三连发/全自动
+    robot_mode mode;          // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
+    uint8_t fire;             // 开火总闸（ch7）：0 = 关
+    uint8_t super_cap_enable; // 超电开关（ch5）：0 = 关；随控制帧转发给底盘
+    fire_mode_e fire_mode;    // 发射模式：fire=0 → 关；fire=1 → ch9 三段解出 单发/三连发/全自动
 
     // 归一化通道 (-1~1)：摇杆/开关中位 0
     float gimbal_pitch_channel;  // 云台 pitch
     float gimbal_yaw_channel;    // 云台 yaw
     float chassis_vx_channel;    // 底盘前后
     float chassis_vy_channel;    // 底盘左右
-    float chassis_speed_channel; // 底盘速度旋钮：-1 = 最小速度档，+1 = 最大速度档（非回中，无死区）；
-                                 // 同时缩放平动最大速度与 gyro 档自转角速度
+    float chassis_speed_channel; // 速度档位：现固定为 0（原 ch8 旋钮已改作视觉开关），
+                                 // 0 = 区间中点，同时缩放平动最大速度与 gyro 档自转角速度
 } AppCmdRun_ctx_struct;
 
 /*============================================
@@ -115,11 +119,11 @@ COMM_DEF(vis_comm, MEDIA_USB_SIMPLE, VISUAL, VISUAL, vision_recv_t, 48, vision_s
  * （见 comm_proto_ext.h）。分块与帧长全在编译期定死，运行期只按已算好的 cfg 逐块编解码。
  * 云台侧 tx_id=0x100 段、rx_id=0x110 段（底盘侧对调）；ID 段与 CAN1 现有占用
  * （yaw RS05 0x001/0x0FD）及后续 3508 波盘（0x1FF/0x200/0x201~0x208）均不重叠。
- * 收发 payload 分别为 gimbal2chassis_data_t(13B) / chassis2gimbal_data_t(12B)：
- *   13B → 1 块 × 14B 编码区，整帧 18B（3 个 CAN 包）
+ * 收发 payload 分别为 gimbal2chassis_data_t(14B) / chassis2gimbal_data_t(12B)：
+ *   14B → 1 块 × 15B 编码区，整帧 19B（3 个 CAN 包）
  *   12B → 1 块 × 13B 编码区，整帧 17B（3 个 CAN 包）
  * CAN1 上挂有经典 CAN 的 RS05，故 mode 必须 CLASSIC（不可用 FD）。 */
-COMM_DEF(chassis_comm, MEDIA_CAN_IDSEQ, EXT, EXT, chassis2gimbal_data_t, 12, gimbal2chassis_data_t, 13, UNPACK_IN_ISR);
+COMM_DEF(chassis_comm, MEDIA_CAN_IDSEQ, EXT, EXT, chassis2gimbal_data_t, 12, gimbal2chassis_data_t, 14, UNPACK_IN_ISR);
 
 // AppCmdRun内部上下文
 static AppCmdRun_ctx_struct cmd_ctx;
@@ -174,8 +178,8 @@ static void input_sbus(void)
     cmd_ctx.gimbal_yaw_channel = sbus_inst.sbus_data.ch[SBUS_CH_YAW];
     cmd_ctx.chassis_vx_channel = sbus_inst.sbus_data.ch[SBUS_CH_VX];
     cmd_ctx.chassis_vy_channel = sbus_inst.sbus_data.ch[SBUS_CH_VY];
-    // 旋钮不回中、也不该被死区吃掉，原值直接用
-    cmd_ctx.chassis_speed_channel = sbus_inst.sbus_data.ch[SBUS_CH_SPEED];
+    // ch8 已改作视觉开关：速度固定取旋钮中位（通道值 0），不再随遥控变化
+    cmd_ctx.chassis_speed_channel = SBUS_SPEED_CHANNEL_FIXED;
 }
 
 /* 图传遥控 → 4 通道
@@ -199,6 +203,7 @@ static void input_update(void)
     cmd_ctx.type = no_control_e;
     cmd_ctx.mode = robot_mode_stop;
     cmd_ctx.fire = 0;
+    cmd_ctx.super_cap_enable = 0;
     cmd_ctx.fire_mode = fire_mode_off_e;
     cmd_ctx.gimbal_pitch_channel = 0.0f;
     cmd_ctx.gimbal_yaw_channel = 0.0f;
@@ -224,6 +229,10 @@ static void input_update(void)
         cmd_ctx.mode = robot_mode_hole; // 下档
     else
         cmd_ctx.mode = robot_mode_gyro; // 中档
+
+    /* 超电开关（ch5，两段）：上 = 使能。总开关关闭/遥控掉线时上面已默认 0。 */
+    cmd_ctx.super_cap_enable = (sbus_inst.sbus_data.ch[SBUS_CH_SUPER_CAP] > sbus_half) ? 1u : 0u;
+
     /* 发射：ch7 是总闸（两段开关），ch7 = 1 时由 ch9 旋钮在 -1~1 上等分三段选模式。
      * 两个都按"开关量"在这里直接读 sbus（ch9 现在是选择器，不再是旋钮通道）。
      * 极性：-1 端 → +1 端依次为 单发 / 三连发 / 全自动。 */
@@ -243,8 +252,8 @@ static void input_update(void)
             cmd_ctx.fire_mode = fire_mode_auto_e;
     }
 
-    // 云台控制权：自瞄开关打开且视觉有目标 → 交给视觉，否则由摇杆控制
-    if ((sbus_inst.sbus_data.ch[SBUS_CH_AIM] > sbus_half) && (vision_appear_e == vision_recv_data.appear))
+    // 云台控制权：视觉开关（ch8）打开且视觉有目标 → 交给视觉，否则由摇杆控制
+    if ((sbus_inst.sbus_data.ch[SBUS_CH_VISION] > sbus_half) && (vision_appear_e == vision_recv_data.appear))
         cmd_ctx.type = visual_control_e;
     else
         cmd_ctx.type = sbus_e;
@@ -289,7 +298,8 @@ static void input_update(void)
  * θ 根本不被拉开，kp 只收拾残余误差（详见 robot_def.h 的注释）。
  *
  * ⚠ 实车标定：先架空轮子给一个小 yaw 偏角，确认底盘转向能让 θ 归零；
- *   转向反了就把 kp 取负（本车实际符号与上面"逆时针为正"的推导相反，kp 与 ff 都取了负）。
+ *   转向反了就把 kp 取负。本车在通信语义统一后 kp/ff 都是**正**的
+ *   （底盘的 w>0 已实测为俯视逆时针；调试通路 w=-摇杆 与这里的 ff 也是同一方向）。
  *   再把 |kp| 从 1 左右往上加到跟得上又不抖。 */
 static float chassis_w_from_mode(float theta, float yaw_rate_cmd)
 {
@@ -297,7 +307,7 @@ static float chassis_w_from_mode(float theta, float yaw_rate_cmd)
     {
         // gyro 档底盘在定速自转、云台锁世界系航向让操作手照常瞄准：两者互不跟随，
         // 不加 yaw 前馈（否则瞄准时摇杆会叠加到自转速度上，自转不再是定值），
-        // 也不吃跟随限幅——这个定值由旋转速度旋钮（ch9）缩放后恒等输出
+        // 也不吃跟随限幅——这个定值按固定的中位缩放值恒等输出（原速度旋钮已改作视觉开关）
         return knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
     }
 
@@ -414,25 +424,27 @@ static void send_gimbal(void)
  * 改成由空出来的云台 yaw 摇杆通道直接控，见下面的分支。 */
 static void send_chassis(void)
 {
-    /* 底盘速度旋钮调速：ch8 (-1~1) 映射成本拍可用的平动最大速度
-     *   knob = -1 → chassis_translate_speed_min（慢速档）
-     *   knob = +1 → chassis_translate_speed（全速档）
-     * 摇杆只决定方向与在该上限内的比例，满舵 = 该档位的最大速度。
-     * 同一个旋钮在 gyro 档也缩放自转角速度，两处上限各自独立（见 chassis_w_from_mode）。 */
+    /* 平动最大速度：速度旋钮（ch8）已改作视觉开关，这里固定取中位值 0，
+     * 即 knob_scale(0) = chassis_translate_speed_min 与 ..._speed 的区间中点。
+     * 摇杆只决定方向与在该上限内的比例，满舵 = 该固定档位的最大速度。
+     * gyro 档的自转角速度用同一个固定值缩放（见 chassis_w_from_mode）。 */
     float translate_speed = knob_scale(cmd_ctx.chassis_speed_channel, chassis_translate_speed_min, chassis_translate_speed);
     // 摇杆速度向量 (vx 前+、vy 左+)：正常路径下先按"云台指向坐标系"取，再由下面的 θ 转到车身系
     float vx_stick = channel_deadzone(cmd_ctx.chassis_vx_channel) * translate_speed;
     float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * translate_speed;
 
     gimbal2chassis_data.enabled = cmd_ctx.mode; // robot_mode_stop = 失能
+    /* 超电开关（ch5）随控制帧转发；底盘侧用它决定 DCDC 使能 */
+    gimbal2chassis_data.super_cap_enable = cmd_ctx.super_cap_enable;
 
 #if CMD_DEBUG_CHASSIS_ONLY
     /* 调试底盘（见 app_cfg.h）：摇杆向量不按云台夹角旋转，直接按车身系发下去 ——
      * 推前就是车头方向，底盘不再追云台。
      * w 改由**云台 yaw 那个摇杆通道**直接控制（这个模式下它空着，正好拿来转车身）：
-     *   摇杆 -1~1 → 自转角速度，大小仍由速度旋钮按 gyro 档那套缩放；
-     *   取负与云台 yaw 的约定保持一致（两边都是逆时针为正），摇杆物理转向不变；
-     *   死区照吃，摇杆回中 = 不转。若实车方向相反，把这里的负号去掉。 */
+     *   摇杆 -1~1 → 自转角速度，大小仍按 gyro 档那套固定中位值缩放；
+     *   取负与云台 yaw 的约定保持一致：正摇杆 = 云台顺时针，底盘也该顺时针，
+     *   而 w>0 是逆时针 ⇒ 这里必须取负（与 normal 档 ff=+1 的结果同向）；
+     *   死区照吃，摇杆回中 = 不转。 */
     gimbal2chassis_data.vx = vx_stick;
     gimbal2chassis_data.vy = vy_stick;
     gimbal2chassis_data.w =
