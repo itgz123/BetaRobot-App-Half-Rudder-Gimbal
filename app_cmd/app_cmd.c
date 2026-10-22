@@ -42,16 +42,16 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 
 /* SBUS 通道分配（0 基；摇杆 -1~1，三档开关 -1/0/+1，旋钮 -1~1）
  * 注：README「操作逻辑」一节写的拨杆号与代码不一致，这里以实机在用的映射为准。 */
-#define SBUS_CH_VY 0        // 右摇杆左右 → 底盘 vy
-#define SBUS_CH_VX 1        // 右摇杆前后 → 底盘 vx
-#define SBUS_CH_PITCH 2     // 左摇杆上下 → 云台 pitch
-#define SBUS_CH_YAW 3       // 左摇杆左右 → 云台 yaw
-#define SBUS_CH_ENABLE 4    // 总开关：上 = 使能
-#define SBUS_CH_SUPER_CAP 5 // 超电开关（两段）：上 = 使能，经底盘-云台链路转发给底盘
-#define SBUS_CH_MODE 6      // 档位开关（三档）：normal / gyro / hole
-#define SBUS_CH_FIRE 7      // 开火总闸（两段开关）：0 = 关，1 = 由下面这个旋钮选模式
-#define SBUS_CH_VISION 8    // 视觉控制开关（两段）：上 = 允许视觉接管云台（仍需视觉报有目标）
-#define SBUS_CH_FIRE_MODE 9 // 发射模式旋钮：ch7=1 时把 -1~1 等分三段选 单发/三连发/全自动（非回中，无死区）
+#define SBUS_CH_VY 0          // 右摇杆左右 → 底盘 vy
+#define SBUS_CH_VX 1          // 右摇杆前后 → 底盘 vx
+#define SBUS_CH_PITCH 2       // 左摇杆上下 → 云台 pitch
+#define SBUS_CH_YAW 3         // 左摇杆左右 → 云台 yaw
+#define SBUS_CH_ENABLE 4      // 总开关：上 = 使能
+#define SBUS_CH_POWER_BOOST 5 // 额外功率开关（两段）：上 = 底盘功率上限加一段额外功率
+#define SBUS_CH_MODE 6        // 档位开关（三档）：normal / gyro / hole
+#define SBUS_CH_FIRE 7        // 开火总闸（两段开关）：0 = 关，1 = 由下面这个旋钮选模式
+#define SBUS_CH_VISION 8      // 视觉控制开关（两段）：上 = 允许视觉接管云台（仍需视觉报有目标）
+#define SBUS_CH_FIRE_MODE 9   // 发射模式旋钮：ch7=1 时把 -1~1 等分三段选 单发/三连发/全自动（非回中，无死区）
 
 /* 原 ch8 速度旋钮已改作视觉开关：底盘平动与小陀螺速度固定取旋钮中位，
  * 即归一化通道值 0（knob_scale(0) = 速度区间中点），不再随遥控变化。 */
@@ -79,10 +79,10 @@ typedef struct
 {
     cmd_control_type type; // 本帧生效的控制源
 
-    robot_mode mode;          // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
-    uint8_t fire;             // 开火总闸（ch7）：0 = 关
-    uint8_t super_cap_enable; // 超电开关（ch5）：0 = 关；随控制帧转发给底盘
-    fire_mode_e fire_mode;    // 发射模式：fire=0 → 关；fire=1 → ch9 三段解出 单发/三连发/全自动
+    robot_mode mode;            // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
+    uint8_t fire;               // 开火总闸（ch7）：0 = 关
+    uint8_t power_boost_enable; // 额外功率开关（ch5）：0 = 关；随控制帧转发给底盘
+    fire_mode_e fire_mode;      // 发射模式：fire=0 → 关；fire=1 → ch9 三段解出 单发/三连发/全自动
 
     // 归一化通道 (-1~1)：摇杆/开关中位 0
     float gimbal_pitch_channel;  // 云台 pitch
@@ -203,7 +203,7 @@ static void input_update(void)
     cmd_ctx.type = no_control_e;
     cmd_ctx.mode = robot_mode_stop;
     cmd_ctx.fire = 0;
-    cmd_ctx.super_cap_enable = 0;
+    cmd_ctx.power_boost_enable = 0;
     cmd_ctx.fire_mode = fire_mode_off_e;
     cmd_ctx.gimbal_pitch_channel = 0.0f;
     cmd_ctx.gimbal_yaw_channel = 0.0f;
@@ -230,8 +230,9 @@ static void input_update(void)
     else
         cmd_ctx.mode = robot_mode_gyro; // 中档
 
-    /* 超电开关（ch5，两段）：上 = 使能。总开关关闭/遥控掉线时上面已默认 0。 */
-    cmd_ctx.super_cap_enable = (sbus_inst.sbus_data.ch[SBUS_CH_SUPER_CAP] > sbus_half) ? 1u : 0u;
+    /* 额外功率开关（ch5，两段）：上 = 底盘在基础功率上限上再加一段额外功率。
+     * 总开关关闭/遥控掉线时上面已默认 0。 */
+    cmd_ctx.power_boost_enable = (sbus_inst.sbus_data.ch[SBUS_CH_POWER_BOOST] > sbus_half) ? 1u : 0u;
 
     /* 发射：ch7 是总闸（两段开关），ch7 = 1 时由 ch9 旋钮在 -1~1 上等分三段选模式。
      * 两个都按"开关量"在这里直接读 sbus（ch9 现在是选择器，不再是旋钮通道）。
@@ -434,8 +435,8 @@ static void send_chassis(void)
     float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * translate_speed;
 
     gimbal2chassis_data.enabled = cmd_ctx.mode; // robot_mode_stop = 失能
-    /* 超电开关（ch5）随控制帧转发；底盘侧用它决定 DCDC 使能 */
-    gimbal2chassis_data.super_cap_enable = cmd_ctx.super_cap_enable;
+    /* 额外功率开关（ch5）随控制帧转发；底盘侧用它决定功率上限是否加成 */
+    gimbal2chassis_data.power_boost_enable = cmd_ctx.power_boost_enable;
 
 #if CMD_DEBUG_CHASSIS_ONLY
     /* 调试底盘（见 app_cfg.h）：摇杆向量不按云台夹角旋转，直接按车身系发下去 ——

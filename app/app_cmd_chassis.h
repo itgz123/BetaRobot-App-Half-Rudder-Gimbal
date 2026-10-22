@@ -20,7 +20,7 @@ typedef struct
     float vx;
     float vy;
     float w;
-    uint8_t super_cap_enable; // 1 = 使能超电（遥控 ch5，由云台转发给底盘）
+    uint8_t power_boost_enable; // 1 = 在基础功率上限上加额外功率（遥控 ch5，由云台转发给底盘）
 } gimbal2chassis_data_t;
 typedef struct
 {
