@@ -36,6 +36,7 @@ QueueHandle_t cmd2gimbal_queue_handle = NULL;
 #define CMD_STACK_SIZE 1024
 #define GIMBAL_STACK_SIZE 1024
 #define SHOOT_STACK_SIZE 1024
+#define DAEMON_STACK_SIZE 512
 // 任务频率设置
 #define CMD_FREQ_MS 2    // 遥控，视觉，底盘-云台
 #define GIMBAL_FREQ_MS 2 // 云台
@@ -44,11 +45,21 @@ QueueHandle_t cmd2gimbal_queue_handle = NULL;
 TASK_INSTANCE_DEF(cmd_task, CMD_STACK_SIZE);
 TASK_INSTANCE_DEF(gimbal_task, GIMBAL_STACK_SIZE);
 TASK_INSTANCE_DEF(shoot_task, SHOOT_STACK_SIZE);
+TASK_INSTANCE_DEF(daemon_task, DAEMON_STACK_SIZE);
 
 /* 任务函数：周期任务框架（固定周期唤醒 + 执行耗时监控 + 超时计数） */
 APP_TASK_DEF(Cmd, CMD_FREQ_MS, AppCmdRun)
 APP_TASK_DEF(Gimbal, GIMBAL_FREQ_MS, AppGimbalRun)
 APP_TASK_DEF(Shoot, SHOOT_FREQ_MS, AppShootRun)
+
+/* daemon 周期主体：drv_daemon 不创建任务，由 app 提供任务时基（周期见 DAEMON_FREQ_MS） */
+static void AppDaemonRun(float dt, uint64_t time_stamp)
+{
+    (void)dt;
+    (void)time_stamp;
+    DaemonTask();
+}
+APP_TASK_DEF(Daemon, DAEMON_FREQ_MS, AppDaemonRun)
 
 static void create_queue(void)
 {
@@ -76,6 +87,7 @@ void function_in_main_c(void)
     create_queue();
 
     // 注册任务
+    TaskRegister(&daemon_task, &(Task_Init_Config_s){.func = StartDaemonTask, .priority = 0});
     TaskRegister(&cmd_task, &(Task_Init_Config_s){.func = StartCmdTask, .priority = 2});
     TaskRegister(&gimbal_task, &(Task_Init_Config_s){.func = StartGimbalTask, .priority = 2});
     TaskRegister(&shoot_task, &(Task_Init_Config_s){.func = StartShootTask, .priority = 2});
