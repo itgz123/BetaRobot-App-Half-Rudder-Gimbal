@@ -35,7 +35,7 @@
  * 射频 (发/s) 是拨盘转速的唯一来源。
  *
  * 换算与参考车（half_rudder_2027 的 application/shoot/shoot.c）**完全同构**，那边写的是
- *     DrvsDJIMotorBroadcastSetRef(loader, -rate * 360 * REDUCTION_RATIO_LOADER / NUM_PER_CIRCLE);  // deg/s
+ *     DrvDJIMotorBroadcastSetRef(loader, -rate * 360 * REDUCTION_RATIO_LOADER / NUM_PER_CIRCLE);  // deg/s
  * 其中 360 × 25.6 / 12 = 768 deg = 13.4045 rad。
  * ⚠ 参考车用的 25.6 是**四舍五入值**（真值 268:17 × 62:38 = 25.7214 ⇒ 13.4677 rad）。它只拿这个
  *   数算**巡航转速**（速度上 0.474% 看不出来），所以一直没暴露；我们拿它做**整数网格停位**，
@@ -360,7 +360,7 @@
  * 【本机制】"卡住" = 轨迹要求它动、但机构没跟住，两个条件同时成立：
  *     ① 期望要动：|前馈速度 trigger_angle_ff| > TRIGGER_STUCK_CMD_BAND
  *     ② 实际没跟住：|**原始**反馈转速| < TRIGGER_STUCK_SPEED_BAND + TRIGGER_STUCK_SPEED_RATIO × |前馈速度|
- *   ②取 drvs 的**原始**转速、不走 drvlib 的速度低通 —— 低通本身就是延迟，等于把切断/清积分
+ *   ②取 drv 的**原始**转速、不走 drvlib 的速度低通 —— 低通本身就是延迟，等于把切断/清积分
  *   晚做 2~3 拍（同一理由，上面 §静摩擦前馈 的判据也要求用原始转速）。
  *
  * 【判据口径：2026-10-11 加弹日志后从**绝对**带宽改成**相对**比例】原来 ② 是绝对带宽 0.4 rad/s，

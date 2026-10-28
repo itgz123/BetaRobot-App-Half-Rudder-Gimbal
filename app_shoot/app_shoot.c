@@ -5,7 +5,7 @@
 #include "app_cmd_shoot.h" // cmd2shoot / shoot2cmd 队列句柄与数据结构
 #include "robot_def.h"     // gimbal限位/速度/加速度宏 + TRIGGER_STEP_RAD（每发机构转角）
 //
-#include "drvs_djimotor_broadcast.h" // DJI 广播纯协议层
+#include "drv_djimotor_broadcast.h" // DJI 广播纯协议层
 #include "drvlib_motor.h"            // 三级级联 PID 控制核
 #include "lib_fsm_table.h"           // 表驱动状态机（拨弹状态机）
 #include "lib_traj.h"                // 单轴轨迹核心（段/轨迹/按时间采样）
@@ -19,11 +19,11 @@
 
 // 变量
 // 实例
-DRVS_DJIMOTOR_BROADCAST_INSTANCE_DEF(friction_motor);    // 摩擦轮 M3508 (C620)
-DRVS_DJIMOTOR_BROADCAST_GROUP_DEF(friction_motor_group); // 摩擦轮广播组（一条总线一组）
+DRV_DJIMOTOR_BROADCAST_INSTANCE_DEF(friction_motor);    // 摩擦轮 M3508 (C620)
+DRV_DJIMOTOR_BROADCAST_GROUP_DEF(friction_motor_group); // 摩擦轮广播组（一条总线一组）
 DRVLIB_MOTOR_INSTANCE_DEF(friction_motor_ctrl);          // 摩擦轮速度环（三级 PID 核的中间环）
-DRVS_DJIMOTOR_BROADCAST_INSTANCE_DEF(trigger_motor);     // 拨弹 M3508 (C620)
-DRVS_DJIMOTOR_BROADCAST_GROUP_DEF(trigger_motor_group);  // 拨弹广播组（CAN_1，独立于摩擦轮组）
+DRV_DJIMOTOR_BROADCAST_INSTANCE_DEF(trigger_motor);     // 拨弹 M3508 (C620)
+DRV_DJIMOTOR_BROADCAST_GROUP_DEF(trigger_motor_group);  // 拨弹广播组（CAN_1，独立于摩擦轮组）
 DRVLIB_MOTOR_INSTANCE_DEF(trigger_motor_ctrl);           // 拨弹 速度环（三级 PID 核的中环；无位置环）
 // 通信
 static cmd2shoot_data_t shoot_cmd2shoot_data; // cmd-shoot
@@ -221,18 +221,18 @@ static uint8_t TriggerFsmIsFiring(void)
 void AppShootInit(void)
 {
     // 注册 CAN 实例并挂入广播组
-    BSP_ASSERT_APP_CALL(DrvsDJIMotorBroadcastRegister(&friction_motor));
-    DrvsDJIMotorBroadcastConfig_s friction_motor_cfg = {
+    BSP_ASSERT_APP_CALL(DrvDJIMotorBroadcastRegister(&friction_motor));
+    DrvDJIMotorBroadcastConfig_s friction_motor_cfg = {
         .group = &friction_motor_group,
         .can_e = CAN_2,
-        .model = DRVS_DJI_MODEL_M3508,
+        .model = DRV_DJI_MODEL_M3508,
         .motor_id = 7,
         .torque_constant = 1, // 转矩常数 (Nm/A)
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
     };
-    BSP_ASSERT_APP_CALL(DrvsDJIMotorBroadcastConfig(&friction_motor, &friction_motor_cfg));
+    BSP_ASSERT_APP_CALL(DrvDJIMotorBroadcastConfig(&friction_motor, &friction_motor_cfg));
 
     // 控制核：速度环（ref = rad/s → PID → 电流）
     DrvlibMotor_Config_s friction_motor_ctrl_cfg = {
@@ -251,7 +251,7 @@ void AppShootInit(void)
          * 一阶低通意味着环路要等 20~40 ms 才"看见"掉速、最该补电流的那一段全在滞后里。降到 5 ms
          * 后环路 5~10 ms 内响应；穿越处相位滞后（kp=0.2 对应 τ_cl≈40 ms、≈4 Hz）只有 ~7°，
          * 不动稳定性。代价是反馈噪声抬高（原始转速逐拍 ±5%），经 kp=0.2 折算成电流纹波 ≈±0.7 A，
-         * 可接受。⚠ 观测通道 CH20/CH21 取的是 drvs 原始量，本来就绕过低通，不受本值影响。 */
+         * 可接受。⚠ 观测通道 CH20/CH21 取的是 drv 原始量，本来就绕过低通，不受本值影响。 */
         .lpf_rc = 0.005f,
         .angle_feedforward_src = DRVLIB_MOTOR_FF_DISABLE, // 前馈来源
         .speed_feedforward_src = DRVLIB_MOTOR_FF_DISABLE,
@@ -303,18 +303,18 @@ void AppShootInit(void)
     DrvlibMotorEnable(&friction_motor_ctrl);
 
     // 拨弹电机：注册 CAN 实例并挂入广播组
-    BSP_ASSERT_APP_CALL(DrvsDJIMotorBroadcastRegister(&trigger_motor));
-    DrvsDJIMotorBroadcastConfig_s trigger_motor_cfg = {
+    BSP_ASSERT_APP_CALL(DrvDJIMotorBroadcastRegister(&trigger_motor));
+    DrvDJIMotorBroadcastConfig_s trigger_motor_cfg = {
         .group = &trigger_motor_group,
         .can_e = CAN_1,
-        .model = DRVS_DJI_MODEL_M3508,
+        .model = DRV_DJI_MODEL_M3508,
         .motor_id = 1,
         .torque_constant = 1, // 转矩常数 (Nm/A)
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
     };
-    BSP_ASSERT_APP_CALL(DrvsDJIMotorBroadcastConfig(&trigger_motor, &trigger_motor_cfg));
+    BSP_ASSERT_APP_CALL(DrvDJIMotorBroadcastConfig(&trigger_motor, &trigger_motor_cfg));
 
     /* 控制核：**位置环 + 速度环**（ANGLE|SPEED），设定值来自 lib_traj_jerk 的规划轨迹：
      * 外环 ANGLE 把轨迹 position 当设定值、输出速度设定值；中环 SPEED 再输出电流。
@@ -441,7 +441,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      * 机械方向（2026-10-10 看实机定，原为正向）：摩擦轮"正转"是另一个物理旋向 —— 由控制核
      * Config 的 motor_direction / feedback_direction **成对**声明（= 重定义正方向，闭环仍是负反馈）。
      * app 这里只传协议原始量、不再手写负号；⚠ 只反一个会变成正反馈。 */
-    DrvsDJIMotorBroadcastData_s fm = DrvsDJIMotorBroadcastGetData(&friction_motor);
+    DrvDJIMotorBroadcastData_s fm = DrvDJIMotorBroadcastGetData(&friction_motor);
     float friction_out = 0.0f; // 本拍下发给摩擦轮的电流指令 (A)：失能时恒 0，供 VOFA CH22 观测
     if (shoot_cmd2shoot_data.enable)
     {
@@ -454,22 +454,22 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
         };
         /* app 拿到的 dt 是**毫秒**（见 bsp_app.h 的 APP_TASK_DEF 语义），控制核要秒 */
         friction_out = DrvlibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, dt * 0.001f);
-        DrvsDJIMotorBroadcastSetRef(&friction_motor, 0); // friction_out
+        DrvDJIMotorBroadcastSetRef(&friction_motor, 0); // friction_out
     }
     else // 之后考虑刹车
     {
         friction_motor_setref = 0.0f;
         DrvlibMotorReset(&friction_motor_ctrl); // 清 PID（含积分）与 LPF 状态，不动 enable 标志
-        DrvsDJIMotorBroadcastSetRef(&friction_motor, 0.0f);
+        DrvDJIMotorBroadcastSetRef(&friction_motor, 0.0f);
     }
-    DrvsDJIMotorBroadcastGroupSend(&friction_motor_group);
+    DrvDJIMotorBroadcastGroupSend(&friction_motor_group);
 
     // ---- 拨盘：拨弹状态机 + jerk 受限轨迹位置环 ----
     /* 机械方向（2026-10-10 看实机定）：拨盘"正转"是另一个物理旋向 —— 同样由控制核 Config 的
      * motor_direction / feedback_direction **成对**声明（只反一个会变成正反馈），app 只传协议原始量。
      * 轨迹位置/速度都在这个"app 正向"帧里，规划起点直接用控制核处理后的**多圈**位置 data.position
      * （已含方向与多圈累加）。 */
-    DrvsDJIMotorBroadcastData_s t = DrvsDJIMotorBroadcastGetData(&trigger_motor);
+    DrvDJIMotorBroadcastData_s t = DrvDJIMotorBroadcastGetData(&trigger_motor);
     /* 反馈结构体 trigger_fb 在下面 SetRef 前才构造 —— #if CMD_DEBUG_CHASSIS_ONLY 下位置环
      * 整段旁路、用不到它，放这里会是个未使用变量。 */
 
@@ -646,7 +646,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      *   ⚠ **故意不复用 §卡住保护 的相对判据**：相对判据在整个带载爬行段（~150 ms）都为真，
      *   用它给突破前馈就变成 6 A 的**持续**推力 —— 实测 CH19 在收尾段通断 7.9 次/发、每次摆 6 A，
      *   等于往环路里灌一个电流方波激励（且那时机构已在 25 rad/s 上爬，这一脚本来也帮不上忙）。
-     * 判据与 §卡住保护 一样取 drvs 的**原始**转速、不走速度低通（低通 rc=20 ms 会把起步那一两拍
+     * 判据与 §卡住保护 一样取 drv 的**原始**转速、不走速度低通（低通 rc=20 ms 会把起步那一两拍
      *   的"没动"抹掉，判据迟 2~3 拍才成立）。
      * 方向取**目标速度**符号、不取实测转速：静摩擦时实测恒≈0，用它定符号会在 0 附近抖。
      * 本值在 SetRef 之前赋值 —— 控制核在级联里读 `speed_feedforward_ptr`，晚赋值就晚一拍。 */
@@ -735,8 +735,8 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
 
     float trigger_cmd = trigger_out; // 方向已由控制核的 motor_direction 修正，这里不再取负
 
-    DrvsDJIMotorBroadcastSetRef(&trigger_motor, 0); // trigger_cmd
-    DrvsDJIMotorBroadcastGroupSend(&trigger_motor_group);
+    DrvDJIMotorBroadcastSetRef(&trigger_motor, 0); // trigger_cmd
+    DrvDJIMotorBroadcastGroupSend(&trigger_motor_group);
 
     /* 调试：拨盘**参考位置环**观测通道（本块自己发帧；app_gimbal 的 IMU 那路 VOFA 已关）。
      *   CH1  参考位置 (rad，app 正向，多圈)          —— 位置环给定，三种模式都是同一条 lib_traj 轨迹
@@ -777,11 +777,11 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      * 判弹思路：摩擦轮空转恒速，弹丸被两轮夹着挤过去的那 2~5 ms 会**掉速**，速度环随即**顶电流**
      *   补回来 —— 所以"过弹"的签名是 CH20 掉一个坑、CH21/CH22 冒一个尖、CH23（积分项）随后来一段
      *   恢复。拨盘侧只能看到"走了多少角度"，弹丸到底出没出只能靠这一组。
-     * ⚠ **必须用 drvs 原始量（未低通）**：摩擦轮反馈在控制核里过 5 ms 低通、且乘了
+     * ⚠ **必须用 drv 原始量（未低通）**：摩擦轮反馈在控制核里过 5 ms 低通、且乘了
      *   feedback_direction，走 `data.speed` 已是低通后的值。故 CH20/CH21 取 `fm` 原始量并按 CH8
      *   的约定取负到 app 正向；CH22~CH24 是控制核内部量，本来就是 app 正向，不用取负。
-     *   `DrvsDJIMotorBroadcastGetData()` 返回的**就是**协议原始量（drvs 明确不做滤波/方向/多圈）：
-     *   CH20 = int16 rpm × 2π/60、CH21 = int16 raw × a_per_lsb —— 不需要往 drvs 里再加通道。
+     *   `DrvDJIMotorBroadcastGetData()` 返回的**就是**协议原始量（drv 明确不做滤波/方向/多圈）：
+     *   CH20 = int16 rpm × 2π/60、CH21 = int16 raw × a_per_lsb —— 不需要往 drv 里再加通道。
      * ⚠ 采样 500 Hz。实测弹丸过轮是 **~78 ms 的长浅凹陷**（转速只掉 ~3%、电流 0.4→1.2 A），
      *   不是短促深坑 —— 判弹优先看 CH21/CH22 的平滑电流凸起与 CH23 的积分恢复，CH20 作辅助。
      *   CH20 摩擦轮实测转速 (rad/s, app 正向, **未低通**)      CH21 摩擦轮实测电流 (A, app 正向, **未低通**)
@@ -795,7 +795,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(5, trigger_angle_ff);
     VofaSetChannel(6, trigger_motor_ctrl.data.speed);
     VofaSetChannel(7, drive ? trigger_ref_out.acceleration : 0.0f);
-    VofaSetChannel(8, -t.current); // 实测电流 (A)，app 正向：drvs 原始量无方向，显式取负（未 LPF，保饱和判据）
+    VofaSetChannel(8, -t.current); // 实测电流 (A)，app 正向：drv 原始量无方向，显式取负（未 LPF，保饱和判据）
     VofaSetChannel(9, dt);         // 本拍 dt (ms)：app 拿到的 dt 就是毫秒
     VofaSetChannel(10, (float)LibFsmTableCurrent(&trigger_fsm));
     VofaSetChannel(11, (float)(shoot_cmd2shoot_data.enable && (shoot_cmd2shoot_data.fire_mode != fire_mode_off_e)));

@@ -8,7 +8,7 @@
 #define __APP_CFG_H
 
 /* 锁定 BetaRobot 主仓库版本；未定义或版本不匹配时 BetaRobot_version.h 会 #error */
-#define APP_LOCKED_BETAROBOT_VERSION 20261028195302
+#define APP_LOCKED_BETAROBOT_VERSION 20261028195746
 
 #include "bsp_map.h"
 #include "robot_def.h"
@@ -35,12 +35,12 @@
 #define DRV_SBUS_USED                // SBUS 遥控器驱动
 #define LIB_LKF_USED                 // 通用卡尔曼滤波 (lib_lkf)
 #define DRVLIB_BMI088_KALMAN_USED    // BMI088 零偏标定 + 线性卡尔曼姿态（drv_bmi088 + lib_lkf 联合）
-#define DRVS_DMMOTOR_USED            // DM 电机驱动（drvs 纯协议版；云台上下 pitch）
-#define DRVS_RSMOTOR_USED            // RS 电机驱动（drvs 纯协议版；云台 yaw）
-#define DRVS_LKMOTOR_USED            // LK 电机驱动（drvs 纯协议版一对一，暂未被 app 引用）
-#define DRVS_DJIMOTOR_BROADCAST_USED // DJI 电机驱动（drvs 纯协议版一拖四广播；app_shoot）
-#define DRVS_LKMOTOR_BROADCAST_USED  // LK 电机驱动（drvs 纯协议版一拖四广播，暂未被 app 引用）
-#define DRVLIB_MOTOR_USED            // 三级级联 PID + 反馈后处理（drvs 之上；app_shoot + 云台三轴）
+#define DRV_DMMOTOR_USED            // DM 电机驱动（drv 纯协议版；云台上下 pitch）
+#define DRV_RSMOTOR_USED            // RS 电机驱动（drv 纯协议版；云台 yaw）
+#define DRV_LKMOTOR_USED            // LK 电机驱动（drv 纯协议版一对一，暂未被 app 引用）
+#define DRV_DJIMOTOR_BROADCAST_USED // DJI 电机驱动（drv 纯协议版一拖四广播；app_shoot）
+#define DRV_LKMOTOR_BROADCAST_USED  // LK 电机驱动（drv 纯协议版一拖四广播，暂未被 app 引用）
+#define DRVLIB_MOTOR_USED            // 三级级联 PID + 反馈后处理（drv 之上；app_shoot + 云台三轴）
 #define DRV_AXIS_MIT_LITE_USED       // 单轴 MIT 关节控制
 #define DAEMON_USED                  // Daemon 看门狗
 #define VOFA_USED                    // VOFA+ JustFloat 遥测

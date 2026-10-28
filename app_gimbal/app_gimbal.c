@@ -4,8 +4,8 @@
 #include "app_cmd_gimbal.h" // gimbal2cmd / cmd2gimbal 队列句柄与数据结构
 #include "robot_def.h"
 //
-#include "drvs_dmmotor.h"
-#include "drvs_rsmotor.h"
+#include "drv_dmmotor.h"
+#include "drv_rsmotor.h"
 #include "drvlib_motor.h"
 #include "drv_vofa.h"
 #include "drv_axis_mit_lite.h"
@@ -17,9 +17,9 @@
 #include <stdbool.h> // 状态机守卫
 
 // 实例
-DRVS_DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
-DRVS_DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
-DRVS_RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
+DRV_DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
+DRV_DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
+DRV_RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
 /* 三轴控制核：开环透传，只借用 drvlib_motor 的反馈后处理（多圈/方向/低通） */
 DRVLIB_MOTOR_INSTANCE_DEF(pitchdown_ctrl);
 DRVLIB_MOTOR_INSTANCE_DEF(pitchup_ctrl);
@@ -27,17 +27,17 @@ DRVLIB_MOTOR_INSTANCE_DEF(yaw_ctrl);
 static AxisMitLiteInstance pitchup_axis;
 static AxisMitLiteInstance yaw_axis;
 
-/* 掉线恢复：DM/RS 通信丢失后电机会自行退出 MIT 模式。drvs 层刻意不持有使能状态
+/* 掉线恢复：DM/RS 通信丢失后电机会自行退出 MIT 模式。drv 层刻意不持有使能状态
  * （不知道该不该重发），由 app 在 daemon 离线回调里重发使能 —— 云台三轴上电后
  * 始终需要扭矩（失能态只把输出置 0，不发停机命令），故重发策略恒为"使能"。 */
 static void GimbalDMMotorReenable(void *owner)
 {
-    DrvsDMMotorSendCmd((DrvsDMMotor_s *)owner, DRVS_DM_CMD_MOTOR_MODE);
+    DrvDMMotorSendCmd((DrvDMMotor_s *)owner, DRV_DM_CMD_MOTOR_MODE);
 }
 
 static void GimbalRSMotorReenable(void *owner)
 {
-    DrvsRSMotorSendCmd((DrvsRSMotor_s *)owner, DRVS_RS_CMD_MOTOR_MODE);
+    DrvRSMotorSendCmd((DrvRSMotor_s *)owner, DRV_RS_CMD_MOTOR_MODE);
 }
 
 // 姿态传感器：drvlib_bmi088_kalman（内含 BMI088 通信 + 线性卡尔曼）
@@ -208,14 +208,14 @@ static void GimbalFsmUpdate(robot_mode mode, float pitchdown_pos)
 void AppGimbalInit(void)
 {
     // 注册 CAN 实例（下pitch、上pitch 共用 CAN_2）
-    BSP_ASSERT_APP_CALL(DrvsDMMotorRegister(&pitchdown_motor));
-    BSP_ASSERT_APP_CALL(DrvsDMMotorRegister(&pitchup_motor));
-    BSP_ASSERT_APP_CALL(DrvsRSMotorRegister(&yaw_motor));
+    BSP_ASSERT_APP_CALL(DrvDMMotorRegister(&pitchdown_motor));
+    BSP_ASSERT_APP_CALL(DrvDMMotorRegister(&pitchup_motor));
+    BSP_ASSERT_APP_CALL(DrvRSMotorRegister(&yaw_motor));
 
     /* drv 层只做协议映射：量程必须与上位机一致（DM 调试助手 / 灵足上位机）。
      * 方向、滤波、多圈、开环透传全在下面的 drvlib_motor 配置里。 */
     // 配置下pitch
-    DrvsDMMotorConfig_s pitchdown_cfg = {
+    DrvDMMotorConfig_s pitchdown_cfg = {
         .can_e = CAN_2,
         .can_id = 0x001,
         .master_id = 0x011,
@@ -226,10 +226,10 @@ void AppGimbalInit(void)
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
     };
-    BSP_ASSERT_APP_CALL(DrvsDMMotorConfig(&pitchdown_motor, &pitchdown_cfg));
+    BSP_ASSERT_APP_CALL(DrvDMMotorConfig(&pitchdown_motor, &pitchdown_cfg));
 
     // 配置上pitch
-    DrvsDMMotorConfig_s pitchup_cfg = {
+    DrvDMMotorConfig_s pitchup_cfg = {
         .can_e = CAN_2,
         .can_id = 0x002,
         .master_id = 0x012,
@@ -240,10 +240,10 @@ void AppGimbalInit(void)
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
     };
-    BSP_ASSERT_APP_CALL(DrvsDMMotorConfig(&pitchup_motor, &pitchup_cfg));
+    BSP_ASSERT_APP_CALL(DrvDMMotorConfig(&pitchup_motor, &pitchup_cfg));
 
     // 配置yaw（RS05，量程需与灵足上位机一致：位置±12.57rad/速度±50rad/s/力矩±5.5Nm）
-    DrvsRSMotorConfig_s yaw_cfg = {
+    DrvRSMotorConfig_s yaw_cfg = {
         .can_e = CAN_1,
         .can_id = 0x01,
         .master_id = 0xfd,
@@ -254,7 +254,7 @@ void AppGimbalInit(void)
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
     };
-    BSP_ASSERT_APP_CALL(DrvsRSMotorConfig(&yaw_motor, &yaw_cfg));
+    BSP_ASSERT_APP_CALL(DrvRSMotorConfig(&yaw_motor, &yaw_cfg));
 
     /* 三轴控制核（开环）：app 侧用 axis_lite 算力矩，drvlib_motor 只做反馈后处理，
      * 落点与旧 drv_motor 相同：
@@ -304,10 +304,10 @@ void AppGimbalInit(void)
     DrvlibMotorEnable(&pitchup_ctrl);
     DrvlibMotorEnable(&yaw_ctrl);
 
-    /* 协议层使能 + 掉线重使能（drvs 不持有使能状态，策略归 app） */
-    DrvsDMMotorSendCmd(&pitchdown_motor, DRVS_DM_CMD_MOTOR_MODE);
-    DrvsDMMotorSendCmd(&pitchup_motor, DRVS_DM_CMD_MOTOR_MODE);
-    DrvsRSMotorSendCmd(&yaw_motor, DRVS_RS_CMD_MOTOR_MODE);
+    /* 协议层使能 + 掉线重使能（drv 不持有使能状态，策略归 app） */
+    DrvDMMotorSendCmd(&pitchdown_motor, DRV_DM_CMD_MOTOR_MODE);
+    DrvDMMotorSendCmd(&pitchup_motor, DRV_DM_CMD_MOTOR_MODE);
+    DrvRSMotorSendCmd(&yaw_motor, DRV_RS_CMD_MOTOR_MODE);
     DaemonConfig(pitchdown_motor.daemon,
                  &(Daemon_Config_s){.reload_count = 100,
                                     .fault_action = DAEMON_FAULT_NONE,
@@ -491,9 +491,9 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      * 先喂一次（开环下返回值无用，ref 给 0）把本拍 data 刷新出来供控制律使用；
      * 算完给定后再喂一次拿真正下发量。同一帧按 timestamp_us 去重，不会重复滤波/累圈。
      * 反馈累加与使能无关，失能期间也每拍喂，手动转动后位置保持连续。 */
-    const DrvsDMMotorData_s pitchdown_data = DrvsDMMotorGetData(&pitchdown_motor);
-    const DrvsDMMotorData_s pitchup_data = DrvsDMMotorGetData(&pitchup_motor);
-    const DrvsRSMotorData_s yaw_data = DrvsRSMotorGetData(&yaw_motor);
+    const DrvDMMotorData_s pitchdown_data = DrvDMMotorGetData(&pitchdown_motor);
+    const DrvDMMotorData_s pitchup_data = DrvDMMotorGetData(&pitchup_motor);
+    const DrvRSMotorData_s yaw_data = DrvRSMotorGetData(&yaw_motor);
 
     const DrvlibMotorFeedback_s pitchdown_fb = {
         .position = pitchdown_data.position,
@@ -629,12 +629,12 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
     const float pitchdown_out = DrvlibMotorSetRef(&pitchdown_ctrl, pitchdown_motor_setref, &pitchdown_fb, dt_s);
     const float yaw_out = DrvlibMotorSetRef(&yaw_ctrl, yaw_motor_setref, &yaw_fb, dt_s);
 
-    DrvsDMMotorSetRef(&pitchup_motor, pitchup_out);
-    DrvsDMMotorSetRef(&pitchdown_motor, pitchdown_out);
-    DrvsRSMotorSetRef(&yaw_motor, yaw_out);
-    DrvsDMMotorSend(&pitchdown_motor);
-    DrvsDMMotorSend(&pitchup_motor);
-    DrvsRSMotorSend(&yaw_motor);
+    DrvDMMotorSetRef(&pitchup_motor, pitchup_out);
+    DrvDMMotorSetRef(&pitchdown_motor, pitchdown_out);
+    DrvRSMotorSetRef(&yaw_motor, yaw_out);
+    DrvDMMotorSend(&pitchdown_motor);
+    DrvDMMotorSend(&pitchup_motor);
+    DrvRSMotorSend(&yaw_motor);
 
     /* 回传云台反馈给 cmd（规划器需要当前位置/速度；pitch_down 供视觉回传下pitch位姿角）。
      * yaw 与 yaw_vel 回传的是 IMU 世界系量：必须与上面 yaw 轴控制用的反馈同源，
