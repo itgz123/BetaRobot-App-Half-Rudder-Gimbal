@@ -4,9 +4,9 @@
 #include "app_cmd_gimbal.h" // gimbal2cmd / cmd2gimbal 队列句柄与数据结构
 #include "robot_def.h"
 //
-#include "drv_motor_base.h"
-#include "drv_dmmotor.h"
-#include "drv_rsmotor.h"
+#include "drvs_dmmotor.h"
+#include "drvs_rsmotor.h"
+#include "drvlib_motor.h"
 #include "drv_vofa.h"
 #include "drv_axis_mit_lite.h"
 #include "drvlib_bmi088_kalman.h"
@@ -17,11 +17,28 @@
 #include <stdbool.h> // 状态机守卫
 
 // 实例
-DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
-DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
-RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
+DRVS_DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
+DRVS_DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
+DRVS_RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
+/* 三轴控制核：开环透传，只借用 drvlib_motor 的反馈后处理（多圈/方向/低通） */
+DRVLIB_MOTOR_INSTANCE_DEF(pitchdown_ctrl);
+DRVLIB_MOTOR_INSTANCE_DEF(pitchup_ctrl);
+DRVLIB_MOTOR_INSTANCE_DEF(yaw_ctrl);
 static AxisMitLiteInstance pitchup_axis;
 static AxisMitLiteInstance yaw_axis;
+
+/* 掉线恢复：DM/RS 通信丢失后电机会自行退出 MIT 模式。drvs 层刻意不持有使能状态
+ * （不知道该不该重发），由 app 在 daemon 离线回调里重发使能 —— 云台三轴上电后
+ * 始终需要扭矩（失能态只把输出置 0，不发停机命令），故重发策略恒为"使能"。 */
+static void GimbalDMMotorReenable(void *owner)
+{
+    DrvsDMMotorSendCmd((DrvsDMMotor_s *)owner, DRVS_DM_CMD_MOTOR_MODE);
+}
+
+static void GimbalRSMotorReenable(void *owner)
+{
+    DrvsRSMotorSendCmd((DrvsRSMotor_s *)owner, DRVS_RS_CMD_MOTOR_MODE);
+}
 
 // 姿态传感器：drvlib_bmi088_kalman（内含 BMI088 通信 + 线性卡尔曼）
 /* 姿态、标定修正全在模块内做，app 只取结果：
@@ -191,121 +208,121 @@ static void GimbalFsmUpdate(robot_mode mode, float pitchdown_pos)
 void AppGimbalInit(void)
 {
     // 注册 CAN 实例（下pitch、上pitch 共用 CAN_2）
-    BSP_ASSERT_APP_CALL(DMMotorRegister(&pitchdown_motor));
-    BSP_ASSERT_APP_CALL(DMMotorRegister(&pitchup_motor));
-    BSP_ASSERT_APP_CALL(RSMotorRegister(&yaw_motor));
+    BSP_ASSERT_APP_CALL(DrvsDMMotorRegister(&pitchdown_motor));
+    BSP_ASSERT_APP_CALL(DrvsDMMotorRegister(&pitchup_motor));
+    BSP_ASSERT_APP_CALL(DrvsRSMotorRegister(&yaw_motor));
 
+    /* drv 层只做协议映射：量程必须与上位机一致（DM 调试助手 / 灵足上位机）。
+     * 方向、滤波、多圈、开环透传全在下面的 drvlib_motor 配置里。 */
     // 配置下pitch
-    DMMotor_Config_s pitchdown_cfg = {
+    DrvsDMMotorConfig_s pitchdown_cfg = {
         .can_e = CAN_2,
-        .controller_setting =
-            {
-                .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
-                .feedback_direction = MOTOR_DIRECTION_NORMAL,          // 电机方向
-                .motor_direction = MOTOR_DIRECTION_NORMAL,             // 反馈方向
-                .position_mode = MOTOR_POSITION_LIMITED,               // 位置模式
-                .angle_limit_max = 0,                                  // LIMITED: 限幅上限, WRAP: 归一化上限
-                .angle_limit_min = 0,                                  // LIMITED: 限幅下限, WRAP: 归一化下限
-                .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
-                .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
-                .speed_feedforward_ptr = NULL,                         // 速度前馈指针
-                .position_feedforward_ptr = NULL,                      // 位置前馈指针
-                .angle_src = MOTOR_FEEDBACK_MOTOR,                     // 角度反馈来源
-                .speed_src = MOTOR_FEEDBACK_MOTOR,                     // 速度反馈来源
-                .angle_external_ptr = NULL,                            // 外部角度反馈指针
-                .speed_external_ptr = NULL,                            // 外部速度反馈指针
-            },
-        .model = DM_MODEL_DM4310,
         .can_id = 0x001,
         .master_id = 0x011,
-        .pid_angle_setting = {},
-        .pid_speed_setting = {},
-        .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
-        .speed_lpf_rc = 0.1f,
-        .pos_max = M_PI,
-        .t_range = 10,
-        .vel_range = 30,
+        .pos_max = (float)M_PI, // DM 位置 ±π
+        .vel_range = 30.0f, // DM 速度 ±30 rad/s
+        .t_range = 10.0f,   // DM 扭矩 ±10 Nm
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
     };
-    BSP_ASSERT_APP_CALL(DMMotorConfig(&pitchdown_motor, &pitchdown_cfg));
+    BSP_ASSERT_APP_CALL(DrvsDMMotorConfig(&pitchdown_motor, &pitchdown_cfg));
 
     // 配置上pitch
-    DMMotor_Config_s pitchup_cfg = {
+    DrvsDMMotorConfig_s pitchup_cfg = {
         .can_e = CAN_2,
-        .controller_setting =
-            {
-                .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
-                .feedback_direction = MOTOR_DIRECTION_NORMAL,          // 电机方向
-                .motor_direction = MOTOR_DIRECTION_NORMAL,             // 反馈方向
-                .position_mode = MOTOR_POSITION_LIMITED,               // 位置模式
-                .angle_limit_max = 0,                                  // LIMITED: 限幅上限, WRAP: 归一化上限
-                .angle_limit_min = 0,                                  // LIMITED: 限幅下限, WRAP: 归一化下限
-                .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
-                .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
-                .speed_feedforward_ptr = NULL,                         // 速度前馈指针
-                .position_feedforward_ptr = NULL,                      // 位置前馈指针
-                .angle_src = MOTOR_FEEDBACK_MOTOR,                     // 角度反馈来源
-                .speed_src = MOTOR_FEEDBACK_MOTOR,                     // 速度反馈来源
-                .angle_external_ptr = NULL,                            // 外部角度反馈指针
-                .speed_external_ptr = NULL,                            // 外部速度反馈指针
-            },
-        .model = DM_MODEL_DM4310,
         .can_id = 0x002,
         .master_id = 0x012,
-        .pid_angle_setting = {},
-        .pid_speed_setting = {},
-        .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
-        .speed_lpf_rc = 0.004f, // 截止~40Hz, kp=40时ωn=11.3Hz总滞后140°裕度30° (电机8.6ms延迟限定了高kp必振荡)
-        .pos_max = M_PI,
-        .t_range = 10,
-        .vel_range = 30,
+        .pos_max = (float)M_PI,
+        .vel_range = 30.0f,
+        .t_range = 10.0f,
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
     };
-    BSP_ASSERT_APP_CALL(DMMotorConfig(&pitchup_motor, &pitchup_cfg));
+    BSP_ASSERT_APP_CALL(DrvsDMMotorConfig(&pitchup_motor, &pitchup_cfg));
 
     // 配置yaw（RS05，量程需与灵足上位机一致：位置±12.57rad/速度±50rad/s/力矩±5.5Nm）
-    RSMotor_Config_s yaw_cfg = {
+    DrvsRSMotorConfig_s yaw_cfg = {
         .can_e = CAN_1,
-        .controller_setting =
-            {
-                .loop_type = MOTOR_LOOP_OPEN,                          // 控制模式
-                .feedback_direction = MOTOR_DIRECTION_REVERSE,         // 反馈方向：镜像后 逆时针→正角度（原编码器逆时针为负）
-                .motor_direction = MOTOR_DIRECTION_REVERSE,            // 输出方向：镜像后 正力矩→逆时针（与反馈同步翻，闭环稳定）
-                .position_mode = MOTOR_POSITION_WRAP,                  // 位置模式（yaw无限旋转用环绕）
-                .angle_limit_max = M_PI,                               // WRAP: 归一化上限
-                .angle_limit_min = -M_PI,                              // WRAP: 归一化下限
-                .speed_feedforward_src = MOTOR_FEEDFORWARD_DISABLE,    // 速度前馈来源
-                .position_feedforward_src = MOTOR_FEEDFORWARD_DISABLE, // 位置前馈来源
-                .speed_feedforward_ptr = NULL,                         // 速度前馈指针
-                .position_feedforward_ptr = NULL,                      // 位置前馈指针
-                .angle_src = MOTOR_FEEDBACK_MOTOR,                     // 角度反馈来源
-                .speed_src = MOTOR_FEEDBACK_MOTOR,                     // 速度反馈来源
-                .angle_external_ptr = NULL,                            // 外部角度反馈指针
-                .speed_external_ptr = NULL,                            // 外部速度反馈指针
-            },
-        .model = RS_MODEL_RS05,
         .can_id = 0x01,
         .master_id = 0xfd,
-        .pid_angle_setting = {},
-        .pid_speed_setting = {},
-        .speed_lpf_enable = MOTOR_SPEED_LPF_ENABLE,
-        .speed_lpf_rc = 0.004f,
         .pos_max = 12.57f,  // RS05 默认量程
-        .t_range = 5.5f,    // RS05 默认量程
         .vel_range = 50.0f, // RS05 默认量程
+        .t_range = 5.5f,    // RS05 默认量程
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
     };
-    BSP_ASSERT_APP_CALL(RSMotorConfig(&yaw_motor, &yaw_cfg));
+    BSP_ASSERT_APP_CALL(DrvsRSMotorConfig(&yaw_motor, &yaw_cfg));
 
-    MotorEnable(&(pitchdown_motor.base));
-    MotorEnable(&(pitchup_motor.base));
-    MotorEnable(&(yaw_motor.base));
+    /* 三轴控制核（开环）：app 侧用 axis_lite 算力矩，drvlib_motor 只做反馈后处理，
+     * 落点与旧 drv_motor 相同：
+     *   - pitch：旧 LIMITED(0,0) 实际不限幅 → CONTINUOUS；span=2π（DM 协议 ±π）
+     *   - yaw  ：WRAP ±π、span=2*12.57；feedback/motor 均 REVERSE（镜像后同步翻）
+     *   - 速度低通 RC 沿用旧整定；转矩不滤波 */
+    DrvlibMotor_Config_s pitchdown_ctrl_cfg = {
+        .loop_type = DRVLIB_MOTOR_LOOP_OPEN,
+        .motor_direction = DRVLIB_MOTOR_DIRECTION_NORMAL,    // 输出方向
+        .feedback_direction = DRVLIB_MOTOR_DIRECTION_NORMAL, // 反馈方向
+        .position_mode = DRVLIB_MOTOR_POS_CONTINUOUS,
+        .position_span = 2.0f * (float)M_PI,
+        .position_offset = 0.0f,
+        .lpf_enable = DRVLIB_MOTOR_LPF_ENABLE,
+        .lpf_rc = 0.1f,
+        .current_lpf_rc = 0.0f,
+        .dt_max = 0.01f,
+        .vofa_enable = 0,
+    };
+    DrvlibMotor_Config_s pitchup_ctrl_cfg = pitchdown_ctrl_cfg;
+    pitchup_ctrl_cfg.lpf_rc = 0.004f; // 截止~40Hz, kp=40时ωn=11.3Hz总滞后140°裕度30° (电机8.6ms延迟限定了高kp必振荡)
+
+    DrvlibMotor_Config_s yaw_ctrl_cfg = {
+        .loop_type = DRVLIB_MOTOR_LOOP_OPEN,
+        .motor_direction = DRVLIB_MOTOR_DIRECTION_REVERSE,    // 输出方向：镜像后 正力矩→逆时针（与反馈同步翻，闭环稳定）
+        .feedback_direction = DRVLIB_MOTOR_DIRECTION_REVERSE, // 反馈方向：镜像后 逆时针→正角度（原编码器逆时针为负）
+        .position_mode = DRVLIB_MOTOR_POS_WRAP,
+        .angle_limit_min = -(float)M_PI,
+        .angle_limit_max = (float)M_PI,
+        .position_span = 2.0f * 12.57f,
+        .position_offset = 0.0f,
+        .lpf_enable = DRVLIB_MOTOR_LPF_ENABLE,
+        .lpf_rc = 0.004f,
+        .current_lpf_rc = 0.0f,
+        .dt_max = 0.01f,
+        .vofa_enable = 0,
+    };
+
+    BSP_ASSERT_APP_CALL(DrvlibMotorRegister(&pitchdown_ctrl));
+    BSP_ASSERT_APP_CALL(DrvlibMotorRegister(&pitchup_ctrl));
+    BSP_ASSERT_APP_CALL(DrvlibMotorRegister(&yaw_ctrl));
+    BSP_ASSERT_APP_CALL(DrvlibMotorConfig(&pitchdown_ctrl, &pitchdown_ctrl_cfg));
+    BSP_ASSERT_APP_CALL(DrvlibMotorConfig(&pitchup_ctrl, &pitchup_ctrl_cfg));
+    BSP_ASSERT_APP_CALL(DrvlibMotorConfig(&yaw_ctrl, &yaw_ctrl_cfg));
+
+    DrvlibMotorEnable(&pitchdown_ctrl);
+    DrvlibMotorEnable(&pitchup_ctrl);
+    DrvlibMotorEnable(&yaw_ctrl);
+
+    /* 协议层使能 + 掉线重使能（drvs 不持有使能状态，策略归 app） */
+    DrvsDMMotorSendCmd(&pitchdown_motor, DRVS_DM_CMD_MOTOR_MODE);
+    DrvsDMMotorSendCmd(&pitchup_motor, DRVS_DM_CMD_MOTOR_MODE);
+    DrvsRSMotorSendCmd(&yaw_motor, DRVS_RS_CMD_MOTOR_MODE);
+    DaemonConfig(pitchdown_motor.daemon,
+                 &(Daemon_Config_s){.reload_count = 100,
+                                    .fault_action = DAEMON_FAULT_NONE,
+                                    .callback = GimbalDMMotorReenable,
+                                    .owner_id = &pitchdown_motor});
+    DaemonConfig(pitchup_motor.daemon,
+                 &(Daemon_Config_s){.reload_count = 100,
+                                    .fault_action = DAEMON_FAULT_NONE,
+                                    .callback = GimbalDMMotorReenable,
+                                    .owner_id = &pitchup_motor});
+    DaemonConfig(yaw_motor.daemon,
+                 &(Daemon_Config_s){.reload_count = 100,
+                                    .fault_action = DAEMON_FAULT_NONE,
+                                    .callback = GimbalRSMotorReenable,
+                                    .owner_id = &yaw_motor});
 
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
@@ -465,23 +482,54 @@ void AppGimbalInit(void)
 
 ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
 {
-    (void)dt;
     (void)time_stamp;
+    const float dt_s = dt * 0.001f; // APP_TASK_DEF 的 dt 是 ms，drvlib 要秒
     // 接收消息
     xQueueReceive(cmd2gimbal_queue_handle, &gimbal_cmd2gimbal_data, 0);
 
-    // 计算当前状态
-    MotorData_s pitchdown_mdata = MotorGetData(&(pitchdown_motor.base));
-    MotorData_s pitchup_mdata = MotorGetData(&(pitchup_motor.base));
-    pitchup_mdata.position =
-        (pitchup_motor.base.data_all.data.position - pitchup_position_0) - (pitchdown_motor.base.data_all.data.position - pitchdown_position_min);
-    MotorData_s yaw_mdata = MotorGetData(&(yaw_motor.base));
+    /* ---- 电机反馈：协议原始量 → drvlib 后处理（多圈/偏置/方向/低通） ----
+     * 先喂一次（开环下返回值无用，ref 给 0）把本拍 data 刷新出来供控制律使用；
+     * 算完给定后再喂一次拿真正下发量。同一帧按 timestamp_us 去重，不会重复滤波/累圈。
+     * 反馈累加与使能无关，失能期间也每拍喂，手动转动后位置保持连续。 */
+    const DrvsDMMotorData_s pitchdown_data = DrvsDMMotorGetData(&pitchdown_motor);
+    const DrvsDMMotorData_s pitchup_data = DrvsDMMotorGetData(&pitchup_motor);
+    const DrvsRSMotorData_s yaw_data = DrvsRSMotorGetData(&yaw_motor);
 
-    // 换算为 axis lite 的反馈输入（lite 层不依赖 motor，故在 app 侧剥离 MotorData_s）
+    const DrvlibMotorFeedback_s pitchdown_fb = {
+        .position = pitchdown_data.position,
+        .speed = pitchdown_data.speed,
+        .current = pitchdown_data.torque, // 最内环语义是电流；DM/RS 这里喂扭矩
+        .timestamp_us = pitchdown_data.timestamp_us,
+    };
+    const DrvlibMotorFeedback_s pitchup_fb = {
+        .position = pitchup_data.position,
+        .speed = pitchup_data.speed,
+        .current = pitchup_data.torque,
+        .timestamp_us = pitchup_data.timestamp_us,
+    };
+    const DrvlibMotorFeedback_s yaw_fb = {
+        .position = yaw_data.position,
+        .speed = yaw_data.speed,
+        .current = yaw_data.torque,
+        .timestamp_us = yaw_data.timestamp_us,
+    };
+
+    (void)DrvlibMotorSetRef(&pitchdown_ctrl, 0.0f, &pitchdown_fb, dt_s);
+    (void)DrvlibMotorSetRef(&pitchup_ctrl, 0.0f, &pitchup_fb, dt_s);
+    (void)DrvlibMotorSetRef(&yaw_ctrl, 0.0f, &yaw_fb, dt_s);
+
+    // 计算当前状态
+    const float pitchdown_pos = (float)pitchdown_ctrl.data.position;
+    const float pitchdown_speed = pitchdown_ctrl.data.speed;
+    /* 上 pitch 相对下 pitch 的关节角（旧代码同一算法，只是数据源换成处理后的量） */
+    const float pitchup_pos = (float)((pitchup_ctrl.data.position - (double)pitchup_position_0) -
+                                      (pitchdown_ctrl.data.position - (double)pitchdown_position_min));
+
+    // 换算为 axis lite 的反馈输入（lite 层不依赖 motor，app 侧把处理后的量摊平）
     AxisLiteState_s pitchup_state = {
-        .position = (float)pitchup_mdata.position,
-        .speed = pitchup_mdata.speed,
-        .torque = pitchup_mdata.torque,
+        .position = pitchup_pos,
+        .speed = pitchup_ctrl.data.speed,
+        .torque = pitchup_ctrl.data.current,
     };
 
     /* 姿态更新：读数据 → dt（陀螺时间戳差分）→ 标定修正 → KF → yaw 积分
@@ -506,7 +554,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
     AxisLiteState_s yaw_state = {
         .position = imu_data.euler.yaw,
         .speed = imu_data.yaw_rate,
-        .torque = yaw_mdata.torque,
+        .torque = yaw_ctrl.data.current, // 编码器侧反馈只用于 ID/监控，控制量取自 IMU
     };
 
     /* VOFA 调试输出已移到 drvlib 里：app_gimbal 的 bmi088_cfg 里把
@@ -526,7 +574,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
     /* 状态机：驱动量 = cmd 下发的模式（目标姿态）+ 下 pitch 位置（实际姿态），解出
      * 失能/立起中/直立/倒下中/倒下，再由状态决定哪几轴参与闭环 —— 见 GimbalFsmUpdate
      * 上方的注释。 */
-    GimbalFsmUpdate(gimbal_cmd2gimbal_data.mode, (float)pitchdown_mdata.position);
+    GimbalFsmUpdate(gimbal_cmd2gimbal_data.mode, pitchdown_pos);
     gimbal_state_e gimbal_state = (gimbal_state_e)LibFsmTableCurrent(&gimbal_fsm);
     uint8_t pitch_on = (gimbal_state == gimbal_state_stand_e) || (gimbal_state == gimbal_state_rising_e);
     uint8_t yaw_on = (gimbal_state != gimbal_state_disable_e);
@@ -555,14 +603,14 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         {
             diejia_pitchup_motor_setref = -pitchup_motor_setref;
         }
-        if (pitchdown_mdata.position < pitchdown_position_max - 0.2) // 立起来就不要速度项了，但是在这个临界角度会问题
+        if (pitchdown_pos < pitchdown_position_max - 0.2f) // 立起来就不要速度项了，但是在这个临界角度会问题
         {
             pitchdown_kd = 2;
         }
-        pitchdown_motor_setref = 2.2f +                                                              // 固定值
-                                 1.0f * (pitchdown_position_max - (float)pitchdown_mdata.position) + // 约等于重力前馈
-                                 pitchdown_kd * (2 - pitchdown_mdata.speed) +                        // 速度误差项
-                                 diejia_pitchup_motor_setref;                                        // pitchup单向
+        pitchdown_motor_setref = 2.2f +                                                     // 固定值
+                                 1.0f * (pitchdown_position_max - pitchdown_pos) +          // 约等于重力前馈
+                                 pitchdown_kd * (2 - pitchdown_speed) +                     // 速度误差项
+                                 diejia_pitchup_motor_setref;                               // pitchup单向
     }
     // setref-yaw
     if (yaw_on)
@@ -576,13 +624,17 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         yaw_motor_setref = AxisMitLiteCalculate(&yaw_axis, &yaw_state, &yaw_ref);
     }
 
-    // send
-    MotorSetRef(&(pitchup_motor.base), pitchup_motor_setref);
-    MotorSetRef(&(pitchdown_motor.base), pitchdown_motor_setref);
-    MotorSetRef(&(yaw_motor.base), yaw_motor_setref);
-    MotorSend(&(pitchdown_motor.base));
-    MotorSend(&(pitchup_motor.base));
-    MotorSend(&(yaw_motor.base));
+    // send：开环下返回值 = ref × motor_direction（方向修正仍在控制核里统一做）
+    const float pitchup_out = DrvlibMotorSetRef(&pitchup_ctrl, pitchup_motor_setref, &pitchup_fb, dt_s);
+    const float pitchdown_out = DrvlibMotorSetRef(&pitchdown_ctrl, pitchdown_motor_setref, &pitchdown_fb, dt_s);
+    const float yaw_out = DrvlibMotorSetRef(&yaw_ctrl, yaw_motor_setref, &yaw_fb, dt_s);
+
+    DrvsDMMotorSetRef(&pitchup_motor, pitchup_out);
+    DrvsDMMotorSetRef(&pitchdown_motor, pitchdown_out);
+    DrvsRSMotorSetRef(&yaw_motor, yaw_out);
+    DrvsDMMotorSend(&pitchdown_motor);
+    DrvsDMMotorSend(&pitchup_motor);
+    DrvsRSMotorSend(&yaw_motor);
 
     /* 回传云台反馈给 cmd（规划器需要当前位置/速度；pitch_down 供视觉回传下pitch位姿角）。
      * yaw 与 yaw_vel 回传的是 IMU 世界系量：必须与上面 yaw 轴控制用的反馈同源，
@@ -594,13 +646,13 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      *     cmd 侧切过来后，底盘跟随改用 yaw_motor_position/yaw_motor_vel 即可。 */
     gimbal2cmd_data_t gimbal2cmd_data = {
         .state = gimbal_state, // 云台实际姿态（cmd 可拿去判"云台到没到位/在不在动作中"）
-        .pitch_position = (float)pitchup_mdata.position,
-        .pitch_vel = pitchup_mdata.speed,
+        .pitch_position = pitchup_pos,
+        .pitch_vel = pitchup_ctrl.data.speed,
         .yaw_position = imu_data.euler.yaw,
         .yaw_vel = imu_data.yaw_rate,
-        .pitch_down_position = (float)pitchdown_mdata.position,
-        .yaw_motor_position = (float)yaw_mdata.position,
-        .yaw_motor_vel = yaw_mdata.speed,
+        .pitch_down_position = pitchdown_pos,
+        .yaw_motor_position = (float)yaw_ctrl.data.position,
+        .yaw_motor_vel = yaw_ctrl.data.speed,
     };
     xQueueOverwrite(gimbal2cmd_queue_handle, &gimbal2cmd_data);
 }

@@ -35,7 +35,7 @@
  * 射频 (发/s) 是拨盘转速的唯一来源。
  *
  * 换算与参考车（half_rudder_2027 的 application/shoot/shoot.c）**完全同构**，那边写的是
- *     DJIMotorSetRef(loader, -rate * 360 * REDUCTION_RATIO_LOADER / NUM_PER_CIRCLE);  // deg/s
+ *     DrvsDJIMotorBroadcastSetRef(loader, -rate * 360 * REDUCTION_RATIO_LOADER / NUM_PER_CIRCLE);  // deg/s
  * 其中 360 × 25.6 / 12 = 768 deg = 13.4045 rad。
  * ⚠ 参考车用的 25.6 是**四舍五入值**（真值 268:17 × 62:38 = 25.7214 ⇒ 13.4677 rad）。它只拿这个
  *   数算**巡航转速**（速度上 0.474% 看不出来），所以一直没暴露；我们拿它做**整数网格停位**，
