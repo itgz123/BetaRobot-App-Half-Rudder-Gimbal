@@ -460,10 +460,16 @@ static void send_chassis(void)
      * 用的是 yaw_motor_position（编码器关节角）而不是 yaw_position —— 后者是 IMU 的
      * 世界系航向，底盘一转就变，拿它做跟随会持续自转。 */
     float theta = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
-    float c = Lib_Math_Cos(theta);
-    float s = Lib_Math_Sin(theta);
+    /* 摇杆向量专用角：把 θ 外推到「底盘真正执行本拍车体系速度」的时刻。
+     * gyro 档云台锁世界系航向、底盘以实测 w 逆时针自转 ⇒ dθ/dt = -w。
+     * chassis2gimbal_data.w 是底盘 IMU 实测角速度（app_cmd.c:108 已在接收）。 */
+    float theta_vec =
+        Lib_Math_WrapAngleNegPIToPI(theta - chassis_vec_theta_delay_s * chassis2gimbal_data.w);
+    float c = Lib_Math_Cos(theta_vec);
+    float s = Lib_Math_Sin(theta_vec);
     gimbal2chassis_data.vx = c * vx_stick - s * vy_stick;
     gimbal2chassis_data.vy = s * vx_stick + c * vy_stick;
+    // 跟随环保持原样：仍用未补偿的 theta（不要把 theta_vec 传进去）
     // w 含云台指令角速度前馈（同拍由 send_gimbal 写入 cmd_gimbal_yaw_rate_cmd）
     gimbal2chassis_data.w = chassis_w_from_mode(theta, cmd_gimbal_yaw_rate_cmd);
 #endif

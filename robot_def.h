@@ -72,7 +72,22 @@
  * 标定：车静止，手动把云台指向摆到与底盘前进方向一致，读 yaw 电机的 position
  * （即 gimbal2cmd 回传的 yaw_motor_position），读数就是该填的值。
  * 未标定时填 0：退化为"编码器零位即对正"。 */
-#define chassis_gimbal_offset DEG_TO_RAD(-30.0f)
+#define chassis_gimbal_offset DEG_TO_RAD(15.0f)
+
+/* 摇杆向量旋转角的执行延迟补偿时间 T (s)，只作用于 send_chassis 的向量旋转。
+ *
+ * 从 yaw_motor_position 采样到本拍 (vx,vy) 真正被底盘执行，中间有：
+ *   云台反馈年龄（两任务均 2ms，约 2~4ms）
+ * + CAN 三包 + 底盘 2ms 任务量化 + 底盘输出一拍滞后（约 2~5ms）。
+ * 小陀螺档云台锁世界系航向、底盘以实测 w>0 逆时针自转时 dθ/dt = -w，
+ * 故执行时刻的预测角是
+ *   theta_vec = wrap(theta - w * T)
+ * 代码里是减号：不补偿时平移方向会比瞄准线逆时针偏 wT。
+ *
+ * 0 = 关闭补偿（行为与改动前完全一致）；建议从 0.004~0.006 起调，按 1ms 步进。
+ * gyro 档推前，若轨迹仍偏逆时针（左）→ 加大；偏顺时针（右）→ 减小。
+ * 只改向量旋转，chassis_w_from_mode 的跟随环仍用未补偿的 theta。 */
+#define chassis_vec_theta_delay_s 0.02f
 
 /* 拨弹机构机械参数
  * 拨盘一圈 12 个孔，相邻两孔夹角 360/12 = 30°，每转过 30° 送出一颗弹；
