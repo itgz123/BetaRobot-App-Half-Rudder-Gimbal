@@ -6,10 +6,10 @@
 #include "robot_def.h"     // gimbal限位/速度/加速度宏 + TRIGGER_STEP_RAD（每发机构转角）
 //
 #include "drv_djimotor_broadcast.h" // DJI 广播纯协议层
-#include "drvlib_motor.h"            // 三级级联 PID 控制核
-#include "lib_fsm_table.h"           // 表驱动状态机（拨弹状态机）
-#include "lib_traj.h"                // 单轴轨迹核心（段/轨迹/按时间采样）
-#include "lib_traj_jerk.h"           // jerk 受限点到点规划器
+#include "drvlib_motor.h"           // 三级级联 PID 控制核
+#include "lib_fsm_table.h"          // 表驱动状态机（拨弹状态机）
+#include "lib_traj.h"               // 单轴轨迹核心（段/轨迹/按时间采样）
+#include "lib_traj_jerk.h"          // jerk 受限点到点规划器
 #include "drv_vofa.h"
 //
 #include "bsp_sys_status.h"
@@ -21,10 +21,10 @@
 // 实例
 DRV_DJIMOTOR_BROADCAST_INSTANCE_DEF(friction_motor);    // 摩擦轮 M3508 (C620)
 DRV_DJIMOTOR_BROADCAST_GROUP_DEF(friction_motor_group); // 摩擦轮广播组（一条总线一组）
-DRVLIB_MOTOR_INSTANCE_DEF(friction_motor_ctrl);          // 摩擦轮速度环（三级 PID 核的中间环）
+DRVLIB_MOTOR_INSTANCE_DEF(friction_motor_ctrl);         // 摩擦轮速度环（三级 PID 核的中间环）
 DRV_DJIMOTOR_BROADCAST_INSTANCE_DEF(trigger_motor);     // 拨弹 M3508 (C620)
 DRV_DJIMOTOR_BROADCAST_GROUP_DEF(trigger_motor_group);  // 拨弹广播组（CAN_1，独立于摩擦轮组）
-DRVLIB_MOTOR_INSTANCE_DEF(trigger_motor_ctrl);           // 拨弹 速度环（三级 PID 核的中环；无位置环）
+DRVLIB_MOTOR_INSTANCE_DEF(trigger_motor_ctrl);          // 拨弹 速度环（三级 PID 核的中环；无位置环）
 // 通信
 static cmd2shoot_data_t shoot_cmd2shoot_data; // cmd-shoot
 static shoot2cmd_data_t shoot_shoot2cmd_data; // shoot-cmd

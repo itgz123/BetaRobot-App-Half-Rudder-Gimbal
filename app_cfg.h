@@ -8,48 +8,50 @@
 #define __APP_CFG_H
 
 /* 锁定 BetaRobot 主仓库版本；未定义或版本不匹配时 BetaRobot_version.h 会 #error */
-#define APP_LOCKED_BETAROBOT_VERSION 20261028195746
+#define APP_LOCKED_BETAROBOT_VERSION 20261029230120
 
 #include "bsp_map.h"
 #include "robot_def.h"
 
 /* USED开关 */
-#define BSP_SYS_STATUS_USED          // 系统状态计数（app 初始化错误 / FreeRTOS 任务超时）
-#define BSP_DWT_CYCCNT_USED          // DWT CYCCNT 微秒时基（系统时钟基础）
-#define BSP_GPIO_USED                // GPIO 管理 + EXTI 分发
-#define LIB_MATH_USED                // 数学库（向量/矩阵/四元数/三角函数）
-#define LIB_MATH_TRIG_LUT_USED       // 自研查表三角函数 Lib_Math_*LUT（不定义则表不编译、接口不可用）
-#define BSP_FREERTOS_USED            // FreeRTOS 静态创建封装
-#define BSP_FREERTOS_STATUS_USED     // FreeRTOS 运行状态（钩子 + 空闲任务状态快照，调试器读 bsp_freertos_status）
-#define BSP_SPI_USED                 // SPI (BMI088 / LCD)
-#define BSP_TIM_USED                 // 定时器 (PWM / 编码器)
-#define BSP_USART_USED               // 串口 (SBUS / VOFA / RS485)
-#define BSP_CAN_USED                 // CAN (FDCAN / BXCAN, DJI 电机)
-#define BSP_CAN_LIST_LUT_USED        // CAN 接收中断标准ID LIST模式按ID查表加速（不定义则回退循环判断）
-#define LIB_PID_USED                 // PID 控制器
-#define LIB_MIT_USED                 // MIT PD 控制器
-#define LIB_TRAJ_USED                // 单轴轨迹规划：核心分段多项式(0~4 次) + 任意起止 jerk 受限规划器（app_shoot 拨弹位置环已接入，lib_traj_jerk）
-#define LIB_FSM_TABLE_USED           // 表驱动状态机（app_shoot 拨弹状态机）
-#define DRV_BMI088_USED              // BMI088 IMU 驱动
-#define DRV_DBUS_USED                // DBUS 遥控器驱动
-#define DRV_SBUS_USED                // SBUS 遥控器驱动
-#define LIB_LKF_USED                 // 通用卡尔曼滤波 (lib_lkf)
-#define DRVLIB_BMI088_KALMAN_USED    // BMI088 零偏标定 + 线性卡尔曼姿态（drv_bmi088 + lib_lkf 联合）
+#define BSP_SYS_STATUS_USED         // 系统状态计数（app 初始化错误 / FreeRTOS 任务超时）
+#define BSP_DWT_CYCCNT_USED         // DWT CYCCNT 微秒时基（系统时钟基础）
+#define BSP_GPIO_USED               // GPIO 管理 + EXTI 分发
+#define LIB_MATH_USED               // 数学库（向量/矩阵/四元数/三角函数）
+#define LIB_MATH_TRIG_LUT_USED      // 自研查表三角函数 Lib_Math_*LUT（不定义则表不编译、接口不可用）
+#define BSP_FREERTOS_USED           // FreeRTOS 静态创建封装
+#define BSP_FREERTOS_STATUS_USED    // FreeRTOS 运行状态（钩子 + 空闲任务状态快照，调试器读 bsp_freertos_status）
+#define BSP_SPI_USED                // SPI (BMI088 / LCD)
+#define BSP_TIM_USED                // 定时器 (PWM / 编码器)
+#define BSP_USART_USED              // 串口 (SBUS / VOFA / RS485)
+#define BSP_CAN_USED                // CAN (FDCAN / BXCAN, DJI 电机)
+#define BSP_CAN_LIST_LUT_USED       // CAN 接收中断标准ID LIST模式按ID查表加速（不定义则回退循环判断）
+#define LIB_PID_USED                // PID 控制器
+#define LIB_MIT_USED                // MIT PD 控制器
+#define LIB_MUSIC_USED              // 音频脉冲数组（音效/曲谱数据，drv_buzzer_simple 依赖）
+#define LIB_TRAJ_USED               // 单轴轨迹规划：核心分段多项式(0~4 次) + 任意起止 jerk 受限规划器（app_shoot 拨弹位置环已接入，lib_traj_jerk）
+#define LIB_FSM_TABLE_USED          // 表驱动状态机（app_shoot 拨弹状态机）
+#define DRV_BMI088_USED             // BMI088 IMU 驱动
+#define DRV_DBUS_USED               // DBUS 遥控器驱动
+#define DRV_SBUS_USED               // SBUS 遥控器驱动
+#define LIB_LKF_USED                // 通用卡尔曼滤波 (lib_lkf)
+#define DRVLIB_BMI088_KALMAN_USED   // BMI088 零偏标定 + 线性卡尔曼姿态（drv_bmi088 + lib_lkf 联合）
 #define DRV_DMMOTOR_USED            // DM 电机驱动（drv 纯协议版；云台上下 pitch）
 #define DRV_RSMOTOR_USED            // RS 电机驱动（drv 纯协议版；云台 yaw）
 #define DRV_LKMOTOR_USED            // LK 电机驱动（drv 纯协议版一对一，暂未被 app 引用）
 #define DRV_DJIMOTOR_BROADCAST_USED // DJI 电机驱动（drv 纯协议版一拖四广播；app_shoot）
 #define DRV_LKMOTOR_BROADCAST_USED  // LK 电机驱动（drv 纯协议版一拖四广播，暂未被 app 引用）
-#define DRVLIB_MOTOR_USED            // 三级级联 PID + 反馈后处理（drv 之上；app_shoot + 云台三轴）
-#define DRV_AXIS_MIT_LITE_USED       // 单轴 MIT 关节控制
-#define DAEMON_USED                  // Daemon 看门狗
-#define VOFA_USED                    // VOFA+ JustFloat 遥测
-#define DRV_TERMINAL_LITE_USED       // 串口调参终端（terminal_lite，需 TERMINAL_LITE_UART）
-#define LIB_CRC_USED                 // 软件 CRC 计算（Direct/GenTable/TableCalc）
-#define LIB_CRC_TABLES_USED          // 软件 CRC 常用算法 Flash 表（lib_crc_tables.c）
-#define LIB_HAMMING_USED             // 汉明码纠错（标准 / 扩展缩短 SECDED，任意 bit 长度）
-#define DRV_COMM_USED                //
-#define DRV_REFEREE2026_USED         // 2026 赛季裁判系统（未接入 app；串口/robot_id 在 Referee2026Config 里传）
+#define DRVLIB_MOTOR_USED           // 三级级联 PID + 反馈后处理（drv 之上；app_shoot + 云台三轴）
+#define DRV_AXIS_MIT_LITE_USED      // 单轴 MIT 关节控制
+#define DAEMON_USED                 // Daemon 看门狗
+#define DRV_BUZZER_USED             // 蜂鸣器驱动（PWM 节拍/音调/音量 + 报警与音乐仲裁）
+#define VOFA_USED                   // VOFA+ JustFloat 遥测
+#define DRV_TERMINAL_LITE_USED      // 串口调参终端（terminal_lite，需 TERMINAL_LITE_UART）
+#define LIB_CRC_USED                // 软件 CRC 计算（Direct/GenTable/TableCalc）
+#define LIB_CRC_TABLES_USED         // 软件 CRC 常用算法 Flash 表（lib_crc_tables.c）
+#define LIB_HAMMING_USED            // 汉明码纠错（标准 / 扩展缩短 SECDED，任意 bit 长度）
+#define DRV_COMM_USED               //
+#define DRV_REFEREE2026_USED        // 2026 赛季裁判系统（未接入 app；串口/robot_id 在 Referee2026Config 里传）
 /* 裁判系统三条链路各编各的（一实例一链路）：**定义 = 编进来，不定义 = 整对文件编成空 TU**，
  * 命令码枚举/快照槽/分发表/0xA9 遥控解析一起消失（省 Flash/RAM，也断了误用的可能）。
  * 本车两条：常规链路（比赛信息/性能体系/交互 0x0301）与图传链路（UART_1 接图传发送端）。
