@@ -12,6 +12,7 @@
 //
 #include "drv_daemon.h"
 #include "drv_buzzer_simple.h"
+#include "music_custom.h"
 #include "drv_vofa.h"
 //
 #include "app_cmd.h"
@@ -36,27 +37,27 @@ BUZZER_INSTANCE_DEF(g_buzzer);
  * （daemon 离线期间每拍都调，自然变成循环报警）。 */
 static void AlarmMinor(void)
 {
-    (void)BuzzerPlay(&g_buzzer, MUSIC_EFFECT_ERR_MINOR, MUSIC_PULSE_COUNT(MUSIC_EFFECT_ERR_MINOR), BUZZER_PRIO_HIGH, 1.0f);
+    (void)BuzzerPlay(&g_buzzer, &MUSIC_EFFECT_ERR_MINOR, BUZZER_PRIO_HIGH, 1.0f);
 }
 
 static void AlarmMajor(void)
 {
-    (void)BuzzerPlay(&g_buzzer, MUSIC_EFFECT_ERR_MAJOR, MUSIC_PULSE_COUNT(MUSIC_EFFECT_ERR_MAJOR), BUZZER_PRIO_HIGH, 1.0f);
+    (void)BuzzerPlay(&g_buzzer, &MUSIC_EFFECT_ERR_MAJOR, BUZZER_PRIO_HIGH, 1.0f);
 }
 
 static void AlarmCritical(void)
 {
-    (void)BuzzerPlay(&g_buzzer, MUSIC_EFFECT_ERR_CRITICAL, MUSIC_PULSE_COUNT(MUSIC_EFFECT_ERR_CRITICAL), BUZZER_PRIO_HIGH, 1.0f);
+    (void)BuzzerPlay(&g_buzzer, &MUSIC_EFFECT_ERR_CRITICAL, BUZZER_PRIO_HIGH, 1.0f);
 }
 
 static void AlarmFatal(void)
 {
-    (void)BuzzerPlay(&g_buzzer, MUSIC_EFFECT_ERR_FATAL, MUSIC_PULSE_COUNT(MUSIC_EFFECT_ERR_FATAL), BUZZER_PRIO_HIGH, 1.0f);
+    (void)BuzzerPlay(&g_buzzer, &MUSIC_EFFECT_ERR_FATAL, BUZZER_PRIO_HIGH, 1.0f);
 }
 
 static void AlarmEmergency(void)
 {
-    (void)BuzzerPlay(&g_buzzer, MUSIC_EFFECT_ERR_EMERGENCY, MUSIC_PULSE_COUNT(MUSIC_EFFECT_ERR_EMERGENCY), BUZZER_PRIO_HIGH, 1.0f);
+    (void)BuzzerPlay(&g_buzzer, &MUSIC_EFFECT_ERR_EMERGENCY, BUZZER_PRIO_HIGH, 1.0f);
 }
 
 /* daemon 故障动作表：表必须静态存储期（DaemonInit 只保存指针） */
@@ -120,7 +121,7 @@ void function_in_main_c(void)
     DWT_Init();
     BSPLogInit(); // 初始化日志依赖的 bsp 外设（DWT，幂等）
     BuzzerRegister(&g_buzzer);
-    BuzzerConfig(&g_buzzer, &(Buzzer_Config_s){.tim_e = TIM_BUZZER, .volume = 1.0f});
+    BuzzerConfig(&g_buzzer, &(Buzzer_Config_s){.tim_e = TIM_BUZZER, .volume = 1.0f, .decay_ms = 500});
     DaemonInit(&s_daemon_actions);
     VofaInit();
     // app

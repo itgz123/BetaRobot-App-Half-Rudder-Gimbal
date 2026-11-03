@@ -470,8 +470,8 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      * 轨迹位置/速度都在这个"app 正向"帧里，规划起点直接用控制核处理后的**多圈**位置 data.position
      * （已含方向与多圈累加）。 */
     DrvDJIMotorBroadcastData_s t = DrvDJIMotorBroadcastGetData(&trigger_motor);
-    /* 反馈结构体 trigger_fb 在下面 SetRef 前才构造 —— #if CMD_DEBUG_CHASSIS_ONLY 下位置环
-     * 整段旁路、用不到它，放这里会是个未使用变量。 */
+    /* 反馈结构体 trigger_fb 在下面 SetRef 前才构造 —— 发射未在 CMD_DEBUG_STAGE 中使能时
+     * 位置环整段旁路、用不到它，放这里会是个未使用变量。 */
 
     /* 状态机先刷 ch7 边沿（可能进入发弹状态并置 plan_request），再决定本拍怎么走 */
     TriggerFsmUpdate();
@@ -662,10 +662,10 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     trigger_friction_ff = (trigger_angle_ff >= 0.0f) ? trigger_ff_mag : -trigger_ff_mag;
 
     float trigger_ref;
-#if CMD_DEBUG_CHASSIS_ONLY
-    /* 调试底盘（见 app_cfg.h）：拨盘也只发 0 力矩 —— 位置环整段旁路。
+#if !((CMD_DEBUG_STAGE) & (CMD_DEBUG_STAGE_shoot))
+    /* 发射未在 CMD_DEBUG_STAGE 中使能（宏见 app.h）：拨盘也只发 0 力矩 —— 位置环整段旁路。
      * 本文件不读 cmd 的 enable（拨盘只看 fire_mode），光靠 cmd 下发 fire_mode=off 仍会锁格点闭环，
-     * 故这道门控必须在这里。不调控制核也就没有积分残留（本宏下驱动核从头到尾不被使用），无需 Reset。
+     * 故这道门控必须在这里。不调控制核也就没有积分残留（此分支下驱动核从头到尾不被使用），无需 Reset。
      * trigger_ref 在调试下没有参考可言，取实测位置占位 —— VOFA CH1/CH3 仍照发（CH3 恒 0）。 */
     trigger_ref = (float)trigger_motor_ctrl.data.position;
     float trigger_out = 0.0f;

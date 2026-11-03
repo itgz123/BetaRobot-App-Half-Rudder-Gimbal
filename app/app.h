@@ -8,6 +8,12 @@
  *============================================*/
 void function_in_main_c(void);
 
+#define CMD_DEBUG_STAGE_gimbal 0b00000001
+#define CMD_DEBUG_STAGE_shoot 0b00000010
+#define CMD_DEBUG_STAGE_chassis 0b00000100
+#define CMD_DEBUG_STAGE_referee 0b00001000
+#define CMD_DEBUG_STAGE CMD_DEBUG_STAGE_gimbal | CMD_DEBUG_STAGE_shoot | CMD_DEBUG_STAGE_chassis //
+
 /*============================================
  *              机器人状态机模式
  *   （全 app 通用：cmd / gimbal / 底盘云台链路都以此为状态码）
