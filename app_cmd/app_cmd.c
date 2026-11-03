@@ -61,7 +61,7 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 #define SBUS_CH_YAW 3         // 左摇杆左右 → 云台 yaw
 #define SBUS_CH_ENABLE 4      // 总开关：上 = 使能
 #define SBUS_CH_POWER_BOOST 5 // 额外功率开关（两段）：上 = 底盘功率上限加一段额外功率
-#define SBUS_CH_MODE 6        // 档位开关（三档）：normal / gyro / hole
+#define SBUS_CH_MODE 6        // 档位开关（三档）：hole / normal / gyro
 #define SBUS_CH_FIRE 7        // 开火总闸（两段开关）：0 = 关，1 = 由下面这个旋钮选模式
 #define SBUS_CH_VISION 8      // 视觉控制开关（两段）：上 = 允许视觉接管云台（仍需视觉报有目标）
 #define SBUS_CH_FIRE_MODE 9   // 发射模式旋钮：ch7=1 时把 -1~1 等分三段选 单发/三连发/全自动（非回中，无死区）
@@ -232,16 +232,16 @@ static void input_update(void)
         return; // 总开关断开 → 失能停车
 
     // 总开关已打开：解出状态机与开火
-    // 档位开关（三档）→ 状态机。沿用历史实现的极性：-1 = normal（上档）、
-    // 0 = gyro（中档）、+1 = hole（下档），与 README「从上到下 0/1/2」顺序一致；
+    // 档位开关（三档）→ 状态机。从上到下：-1 = hole（上档）、
+    // 0 = normal（中档）、+1 = gyro（下档）。
     // 若实车拨杆方向相反，交换首尾两个判断即可。
     float sw = sbus_inst.sbus_data.ch[SBUS_CH_MODE];
     if (sw < -sbus_half)
-        cmd_ctx.mode = robot_mode_normal; // 上档
+        cmd_ctx.mode = robot_mode_hole; // 上档
     else if (sw > sbus_half)
-        cmd_ctx.mode = robot_mode_hole; // 下档
+        cmd_ctx.mode = robot_mode_gyro; // 下档
     else
-        cmd_ctx.mode = robot_mode_gyro; // 中档
+        cmd_ctx.mode = robot_mode_normal; // 中档
 
     /* 额外功率开关（ch5，两段）：上 = 底盘在基础功率上限上再加一段额外功率。
      * 总开关关闭/遥控掉线时上面已默认 0。 */

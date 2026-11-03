@@ -129,7 +129,7 @@ static float yaw_motor_setref = 0;
  * 机械原因：倒下后云台沿底盘纵向折叠，yaw 没和底盘对正时折叠会别住/扫到车体。
  * hole 档底盘本来就在跟随把 θ 拉回 0（cmd 的 chassis_w_from_mode），所以这个条件会自然收敛。
  * TODO 实车标定：以折叠不干涉为准；若希望“完全静止才倒下”，把速度阈值再改小。 */
-#define GIMBAL_YAW_ALIGN_EPS DEG_TO_RAD(2.0f)
+#define GIMBAL_YAW_ALIGN_EPS DEG_TO_RAD(6.0f)
 #define GIMBAL_YAW_ALIGN_SPEED DEG_TO_RAD(10.0f)
 
 /* 下 pitch 控制律：只用 axis 模块的重力前馈，其余项都在 app 层按状态叠加：
