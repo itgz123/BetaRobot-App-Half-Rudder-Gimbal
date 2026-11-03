@@ -316,7 +316,8 @@ void AppGimbalInit(void)
     /* 三轴控制核（开环）：app 侧用 axis_lite 算力矩，drvlib_motor 只做反馈后处理，
      * 落点与旧 drv_motor 相同：
      *   - pitch：旧 LIMITED(0,0) 实际不限幅 → CONTINUOUS；span=2π（DM 协议 ±π）
-     *   - yaw  ：WRAP ±π、span=2*12.57；feedback/motor 均 REVERSE（镜像后同步翻）
+     *   - yaw  ：WRAP ±π、span=0（无减速箱，直接用单圈绝对位置，不做多圈累加）；
+     *            feedback/motor 均 REVERSE（镜像后同步翻）
      *   - 速度低通 RC 沿用旧整定；转矩不滤波 */
     DrvlibMotor_Config_s pitchdown_ctrl_cfg = {
         .loop_type = DRVLIB_MOTOR_LOOP_OPEN,
@@ -341,7 +342,7 @@ void AppGimbalInit(void)
         .position_mode = DRVLIB_MOTOR_POS_WRAP,
         .angle_limit_min = -(float)M_PI,
         .angle_limit_max = (float)M_PI,
-        .position_span = 2.0f * 12.57f,
+        .position_span = 0.0f, // 无减速箱：编码器单圈位置即绝对 wrap 角，不做软件多圈累加（避免圈数多后累计误差）
         .position_offset = 0.0f,
         .lpf_enable = DRVLIB_MOTOR_LPF_ENABLE,
         .lpf_rc = 0.004f,

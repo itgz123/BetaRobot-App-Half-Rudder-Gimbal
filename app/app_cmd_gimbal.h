@@ -41,6 +41,7 @@ typedef enum : uint8_t
  *   yaw_position / yaw_vel —— IMU 世界系航向（rad, rad/s）。与视觉下发的世界系 yaw 同一坐标系，
  *                             cmd 的 yaw 规划器拿它当锚点、并原样回传给视觉。
  *   yaw_motor_*            —— yaw 电机编码器的关节角/角速度（rad, rad/s），即"云台相对底盘"。
+ *                             无减速箱，位置为单圈绝对角、已 wrap 到 ±π（不做软件多圈累加）。
  *                             预留：底盘跟随 w = kp*wrap(-云台相对底盘角) 要用这一对，
  *                             现在 cmd 侧还没切过来（见 app_cmd.c 的 chassis_w_from_mode）。 */
 typedef struct
