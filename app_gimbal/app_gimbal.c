@@ -25,6 +25,7 @@ DRVLIB_MOTOR_INSTANCE_DEF(pitchdown_ctrl);
 DRVLIB_MOTOR_INSTANCE_DEF(pitchup_ctrl);
 DRVLIB_MOTOR_INSTANCE_DEF(yaw_ctrl);
 static AxisMitLiteInstance pitchup_axis;
+static AxisMitLiteInstance pitchdown_axis;
 static AxisMitLiteInstance yaw_axis;
 
 /* 掉线恢复：DM/RS 通信丢失后电机会自行退出 MIT 模式。drv 层刻意不持有使能状态
@@ -92,21 +93,77 @@ static float yaw_motor_setref = 0;
  *     ① cmd 下发的 robot_mode → 目标姿态：stop=失能、normal/gyro=直立、hole=倒下
  *        （小陀螺在云台侧与普通同姿态：差异是底盘 w，由 cmd 算，云台不参与）
  *     ② 下 pitch 位置 → 实际姿态：拿 pitchdown_position_max/min 两端点判"到位"
- *   产出：本状态下哪几轴由 cmd 设定值驱动 ——
+ *   产出：本状态下哪几轴由 cmd / 姿态目标驱动 ——
  *     失能          ：三轴输出 0（电机保持使能，仍发零力矩帧）
- *     立起中 / 直立 ：pitch 上下两轴闭环跟随 cmd 设定值（立起中就是"还没抬到位"的同一套律）
- *     倒下中 / 倒下 ：pitch 上下两轴 0（松劲、靠机构自重下垂），yaw 继续控世界系航向
- *   ⚠ 本轮只做状态骨架与上报，驱动律沿用旧的（直立=现有 normal 律、倒下=松劲靠自重），
- *     没有独立的目标角闭环；到位判据（pitchdown 两端点 ± EPS）只为换状态用。真正的驱动律、
- *     迟滞、卡死超时等定了以后再补 —— 那时两个方向的律若仍不同，拆成两个过渡态正合适。
+ *     立起中        ：下 pitch = 重力前馈 + 速度环（朝 pitchdown_position_max），
+ *                     上 pitch 跟随 cmd 设定值
+ *     直立          ：下 pitch = 重力前馈 + 固定偏置 + 上 pitch 单向耦合，
+ *                     上 pitch 跟随 cmd 设定值
+ *     倒下中        ：下 pitch = 重力前馈 + 速度环（朝 pitchdown_position_min）、
+ *                     上 pitch 驶向相对角 0；但**要先等 yaw 相对底盘对正**，
+ *                     未对正时下 pitch 速度给定为 0（起阻尼作用）、上 pitch 保持
+ *     倒下          ：下 pitch 输出 0（关闭重力前馈，靠自重/限位停住），上 pitch 保持在 0
+ *   yaw 在除失能外的所有状态继续控世界系航向。
+ *   ⚠ 下 pitch 没有位置环：上升/下降阶段的速度给定是常量 ±GIMBAL_POSTURE_SLEW_RATE。
+ *     真正的迟滞、卡死超时等以后需要时再加状态动作。
  *   ⚠ 自瞄(visual) 不是云台状态：云台看不见视觉，只是跟随 cmd 算好的设定值（cmd 把视觉
  *     规划写进 pitch/yaw 的 x/v/a）。若将来自瞄要让云台本身改行为（增益/限幅/别的轴
  *     策略），再给 robot_mode 加值或给云台单独发标志。
  *============================================*/
 
-/* 到位判据阈值：下 pitch 距两端点的距离 (rad)。松劲倒下没有闭环，位置靠重力压在
- * pitchdown_position_min 上；抬升靠位置环停在 pitchdown_position_max 附近。 */
-#define GIMBAL_POSTURE_EPS 0.05f
+/* 到位判据阈值：下 pitch 距端点的距离 (rad)，立起/倒下各自独立。
+ *   立起端：保持较紧，避免没抬到位就报直立；
+ *   倒下端：放宽松。倒下由速度环驱动、到点后只剩重力前馈（没有位置环），
+ *           实际常停在 pitchdown_position_min 上方，阈值太紧会一直卡在 falling。 */
+#define GIMBAL_POSTURE_STAND_EPS 0.05f
+#define GIMBAL_POSTURE_LYE_EPS 0.20f
+
+/* 姿态过渡速度 (rad/s)：
+ *   下 pitch —— 直接作为速度环给定（上升 +、下降 -、未许可下降时为 0）；
+ *   上 pitch —— 仍作为位置设定值的限速和前馈速度。
+ * 取值兼顾“有力但不砸”，并给下 pitch 明确的下压/抬升速度。 */
+#define GIMBAL_POSTURE_SLEW_RATE 2.0f
+
+/* “yaw 轴对准”判据：云台相对底盘前进方向的夹角 θ = wrap(yaw 编码器 - chassis_gimbal_offset)
+ * 进入死区，且相对角速度足够小，才允许开始主动倒下。
+ * 机械原因：倒下后云台沿底盘纵向折叠，yaw 没和底盘对正时折叠会别住/扫到车体。
+ * hole 档底盘本来就在跟随把 θ 拉回 0（cmd 的 chassis_w_from_mode），所以这个条件会自然收敛。
+ * TODO 实车标定：以折叠不干涉为准；若希望“完全静止才倒下”，把速度阈值再改小。 */
+#define GIMBAL_YAW_ALIGN_EPS DEG_TO_RAD(2.0f)
+#define GIMBAL_YAW_ALIGN_SPEED DEG_TO_RAD(10.0f)
+
+/* 下 pitch 控制律：只用 axis 模块的重力前馈，其余项都在 app 层按状态叠加：
+ *   恒发   ：重力前馈 gravity*cos(pos)（已实测准确，gravity=1.5）；
+ *   上升/下降：+ 速度闭环；
+ *   最高点锁定（stand）：+ 固定偏置 + 上 pitch 单向耦合；
+ *   倒下中（falling）：重力前馈 + 速度闭环；
+ *   倒下（lying）：输出 0，关闭重力前馈，靠自重和机械限位停住。 */
+#define GIMBAL_PITCHDOWN_GRAVITY 1.5f
+#define GIMBAL_PITCHDOWN_TORQUE_BIAS 2.0f // 最高点锁定时叠加的固定偏置（按实车标定）
+
+/* 速度环增益 (Nm/(rad/s))，仅上升/下降阶段工作。
+ * 旧律速度项 kd*(v_ref-speed) 的 kd 约 1，先从 1.0 起调；过大会在换向/到位时振荡。 */
+#define GIMBAL_PITCHDOWN_VEL_KV 1.0f
+
+/* axis 模块只保留重力前馈（step1）。速度环/偏置/耦合都在 app 层另加；
+ * 不要切到 NORMAL，否则模块内部的位置环会和这套律叠加。 */
+#define GIMBAL_PITCHDOWN_AXIS_STAGE AXIS_LITE_STAGE_FIXED_TORQUE
+
+/* 姿态过渡用位置设定值（上 pitch 限速后喂给 axis 模块；下 pitch 仅作状态锚点）
+ * 与状态边沿检测 */
+static float pitchdown_posture_ref = 0.0f;
+static float pitchup_posture_ref = 0.0f;
+static gimbal_state_e gimbal_state_last = gimbal_state_disable_e;
+/* yaw 对准后锁存：一旦开始倒下就允许走完，不因中途 θ 抖动又停在半路 */
+static uint8_t gimbal_fall_permitted = 0;
+
+/* 把 *cur 每拍朝 target 最多挪 max_delta，返回实际步长（秒化后作为 ref.speed 前馈） */
+static inline float GimbalSlewStep(float *cur, float target, float max_delta)
+{
+    float step = Lib_Math_Clamp(target - *cur, -max_delta, max_delta);
+    *cur += step;
+    return step;
+}
 
 typedef enum : uint8_t
 {
@@ -188,11 +245,11 @@ static void GimbalFsmUpdate(robot_mode mode, float pitchdown_pos)
 {
     gimbal_fsm_ctx.mode = mode;
     gimbal_fsm_ctx.posture = gimbal_posture_unknown_e;
-    if (pitchdown_pos >= pitchdown_position_max - GIMBAL_POSTURE_EPS)
+    if (pitchdown_pos >= pitchdown_position_max - GIMBAL_POSTURE_STAND_EPS)
     {
         gimbal_fsm_ctx.posture = gimbal_posture_stand_e;
     }
-    else if (pitchdown_pos <= pitchdown_position_min + GIMBAL_POSTURE_EPS)
+    else if (pitchdown_pos <= pitchdown_position_min + GIMBAL_POSTURE_LYE_EPS)
     {
         gimbal_fsm_ctx.posture = gimbal_posture_lye_e;
     }
@@ -220,8 +277,8 @@ void AppGimbalInit(void)
         .can_id = 0x001,
         .master_id = 0x011,
         .pos_max = (float)M_PI, // DM 位置 ±π
-        .vel_range = 30.0f, // DM 速度 ±30 rad/s
-        .t_range = 10.0f,   // DM 扭矩 ±10 Nm
+        .vel_range = 30.0f,     // DM 速度 ±30 rad/s
+        .t_range = 10.0f,       // DM 扭矩 ±10 Nm
         .reload_count = 100,
         .fault_action = DAEMON_FAULT_NONE,
         .timeout_ms = 1, // CAN 发送超时(ms)
@@ -309,20 +366,11 @@ void AppGimbalInit(void)
     DrvDMMotorSendCmd(&pitchup_motor, DRV_DM_CMD_MOTOR_MODE);
     DrvRSMotorSendCmd(&yaw_motor, DRV_RS_CMD_MOTOR_MODE);
     DaemonConfig(pitchdown_motor.daemon,
-                 &(Daemon_Config_s){.reload_count = 100,
-                                    .fault_action = DAEMON_FAULT_NONE,
-                                    .callback = GimbalDMMotorReenable,
-                                    .owner_id = &pitchdown_motor});
+                 &(Daemon_Config_s){.reload_count = 100, .fault_action = DAEMON_FAULT_NONE, .callback = GimbalDMMotorReenable, .owner_id = &pitchdown_motor});
     DaemonConfig(pitchup_motor.daemon,
-                 &(Daemon_Config_s){.reload_count = 100,
-                                    .fault_action = DAEMON_FAULT_NONE,
-                                    .callback = GimbalDMMotorReenable,
-                                    .owner_id = &pitchup_motor});
+                 &(Daemon_Config_s){.reload_count = 100, .fault_action = DAEMON_FAULT_NONE, .callback = GimbalDMMotorReenable, .owner_id = &pitchup_motor});
     DaemonConfig(yaw_motor.daemon,
-                 &(Daemon_Config_s){.reload_count = 100,
-                                    .fault_action = DAEMON_FAULT_NONE,
-                                    .callback = GimbalRSMotorReenable,
-                                    .owner_id = &yaw_motor});
+                 &(Daemon_Config_s){.reload_count = 100, .fault_action = DAEMON_FAULT_NONE, .callback = GimbalRSMotorReenable, .owner_id = &yaw_motor});
 
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
@@ -360,6 +408,31 @@ void AppGimbalInit(void)
         .kd = 0.4f, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
+
+    /* 下 pitch 轴：只用 FIXED_TORQUE 阶段的重力前馈 gravity*cos(pos)，
+     * 模块内部的位置/速度闭环不参与；速度环、最高点偏置、上 pitch 耦合都在
+     * AppGimbalRun 里按状态叠加（见 GIMBAL_PITCHDOWN_* 宏）。
+     * gravity=1.5 已实测准确；kp/kd 在 FIXED_TORQUE 下不生效，仅保留配置。 */
+    AxisMitLite_Init_Config_s pitchdown_axis_cfg = {
+        .stage = GIMBAL_PITCHDOWN_AXIS_STAGE,
+        .delay_ms = 5000,
+        .params =
+            {
+                .gravity = GIMBAL_PITCHDOWN_GRAVITY,
+                .gear_ratio = 1,
+                .inertia = 0.008f,
+                .friction_coulomb_pos = 0.0f,
+                .friction_coulomb_neg = 0.0f,
+                .friction_viscous_pos = 0.0f,
+                .friction_viscous_neg = 0.0f,
+            },
+        .sine_params = {.amplitude = 0.2f, .freq = 2},
+        .chirp_params = {.amplitude_start = 0.1f, .amplitude_end = 3, .duration = 15, .start_freq = 1, .end_freq = 8},
+        .multi_sine_params = {.amplitude = 0.1f, .duration = 1, .num_freqs = 10},
+        .kp = 4.0f,
+        .kd = 2.0f,
+    };
+    BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchdown_axis, &pitchdown_axis_cfg));
 
     AxisMitLite_Init_Config_s yaw_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
@@ -520,12 +593,16 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
 
     // 计算当前状态
     const float pitchdown_pos = (float)pitchdown_ctrl.data.position;
-    const float pitchdown_speed = pitchdown_ctrl.data.speed;
     /* 上 pitch 相对下 pitch 的关节角（旧代码同一算法，只是数据源换成处理后的量） */
-    const float pitchup_pos = (float)((pitchup_ctrl.data.position - (double)pitchup_position_0) -
-                                      (pitchdown_ctrl.data.position - (double)pitchdown_position_min));
+    const float pitchup_pos =
+        (float)((pitchup_ctrl.data.position - (double)pitchup_position_0) - (pitchdown_ctrl.data.position - (double)pitchdown_position_min));
 
     // 换算为 axis lite 的反馈输入（lite 层不依赖 motor，app 侧把处理后的量摊平）
+    AxisLiteState_s pitchdown_state = {
+        .position = pitchdown_pos,
+        .speed = pitchdown_ctrl.data.speed,
+        .torque = pitchdown_ctrl.data.current,
+    };
     AxisLiteState_s pitchup_state = {
         .position = pitchup_pos,
         .speed = pitchup_ctrl.data.speed,
@@ -557,6 +634,12 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         .torque = yaw_ctrl.data.current, // 编码器侧反馈只用于 ID/监控，控制量取自 IMU
     };
 
+    /* yaw 相对底盘前进方向的夹角 θ（编码器关节角，不是世界系航向）：
+     * 主动倒下的前置条件 —— 云台要先和底盘对正，折叠时才不会别住车体。
+     * 速度也取编码器侧：判断的是“相对底盘不再转动”，与 IMU 世界系 yaw_rate 无关。 */
+    const float yaw_rel = Lib_Math_WrapAngleNegPIToPI((float)yaw_ctrl.data.position - chassis_gimbal_offset);
+    const uint8_t yaw_aligned = (Lib_Math_Fabs(yaw_rel) < GIMBAL_YAW_ALIGN_EPS) && (Lib_Math_Fabs(yaw_ctrl.data.speed) < GIMBAL_YAW_ALIGN_SPEED);
+
     /* VOFA 调试输出已移到 drvlib 里：app_gimbal 的 bmi088_cfg 里把
      *   .vofa_enable = 1
      * 打开，drvlib 每帧自己把 IMU 数据写进通道并 VofaSend（通道表在
@@ -572,45 +655,139 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
 
     // setref
     /* 状态机：驱动量 = cmd 下发的模式（目标姿态）+ 下 pitch 位置（实际姿态），解出
-     * 失能/立起中/直立/倒下中/倒下，再由状态决定哪几轴参与闭环 —— 见 GimbalFsmUpdate
-     * 上方的注释。 */
+     * 失能/立起中/直立/倒下中/倒下 —— 见 GimbalFsmUpdate 上方的注释。 */
     GimbalFsmUpdate(gimbal_cmd2gimbal_data.mode, pitchdown_pos);
     gimbal_state_e gimbal_state = (gimbal_state_e)LibFsmTableCurrent(&gimbal_fsm);
-    uint8_t pitch_on = (gimbal_state == gimbal_state_stand_e) || (gimbal_state == gimbal_state_rising_e);
+
+    /* 倒下许可：hole 档且 yaw 与底盘对正后锁存；离开 hole 档重新解禁。
+     * 一旦锁存，中途 θ 抖动/底盘被挡住也继续把倒下走完，避免停在半路。 */
+    if (robot_mode_hole != gimbal_cmd2gimbal_data.mode)
+    {
+        gimbal_fall_permitted = 0;
+    }
+    else if (yaw_aligned)
+    {
+        gimbal_fall_permitted = 1;
+    }
+
+    /* 失能之外三轴都参与闭环：pitch 在 falling/lying 也由 axis 模块主动保持/过渡 */
+    uint8_t pitch_on = (gimbal_state != gimbal_state_disable_e);
     uint8_t yaw_on = (gimbal_state != gimbal_state_disable_e);
+
+    /* 状态切换时把姿态设定值锚在当前实测位置，避免 target 从旧状态残留值跳变 */
+    if (gimbal_state != gimbal_state_last)
+    {
+        pitchdown_posture_ref = pitchdown_pos;
+        pitchup_posture_ref = pitchup_pos;
+        gimbal_state_last = gimbal_state;
+    }
+
     // 清零
     pitchup_motor_setref = 0;
     pitchdown_motor_setref = 0;
     yaw_motor_setref = 0;
-    // setref-pitchup
+
     if (pitch_on)
     {
-        // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
-        AxisMitLiteRef_s pitchup_ref = {
-            .position = gimbal_cmd2gimbal_data.pitch_x,
-            .speed = gimbal_cmd2gimbal_data.pitch_v,
-            .acceleration = gimbal_cmd2gimbal_data.pitch_a,
+        /* 姿态目标：立起/直立时下 pitch 去 max、上 pitch 跟 cmd；
+         * 倒下时下 pitch 去 min、上 pitch 相对角回 0（折叠）。
+         * falling 下若 yaw 还没对正，两个 ref 停在进入 falling 时的实测位置（主动保持）。 */
+        const float slew_max = GIMBAL_POSTURE_SLEW_RATE * dt_s;
+        float pitchdown_step = 0.0f;
+        float pitchup_step = 0.0f;
+        uint8_t pitchup_use_cmd = 0;
+
+        switch (gimbal_state)
+        {
+        case gimbal_state_rising_e:
+        case gimbal_state_stand_e:
+            pitchdown_step = GimbalSlewStep(&pitchdown_posture_ref, pitchdown_position_max, slew_max);
+            pitchup_use_cmd = 1;
+            break;
+
+        case gimbal_state_falling_e:
+            if (gimbal_fall_permitted)
+            {
+                pitchdown_step = GimbalSlewStep(&pitchdown_posture_ref, pitchdown_position_min, slew_max);
+                pitchup_step = GimbalSlewStep(&pitchup_posture_ref, 0.0f, slew_max);
+            }
+            break; // 未对正：ref 保持进入 falling 时的位置
+
+        case gimbal_state_lying_e:
+            pitchdown_step = GimbalSlewStep(&pitchdown_posture_ref, pitchdown_position_min, slew_max);
+            pitchup_step = GimbalSlewStep(&pitchup_posture_ref, 0.0f, slew_max);
+            break;
+
+        case gimbal_state_disable_e:
+        default:
+            break;
+        }
+
+        // setref-pitchdown：axis 模块只取重力前馈（FIXED_TORQUE 阶段 ref 被忽略）
+        AxisMitLiteRef_s pitchdown_ref = {
+            .position = pitchdown_posture_ref,
+            .speed = (dt_s > 0.0f) ? (pitchdown_step / dt_s) : 0.0f,
+            .acceleration = 0.0f,
         };
+        pitchdown_motor_setref = AxisMitLiteCalculate(&pitchdown_axis, &pitchdown_state, &pitchdown_ref);
+
+        if (gimbal_state == gimbal_state_lying_e)
+        {
+            /* 已倒下：关闭重力前馈，下 pitch 松劲靠自重/机械限位停住 */
+            pitchdown_motor_setref = 0.0f;
+        }
+        else
+        {
+            /* 速度闭环：只在上升/下降阶段参与。
+             * 速度给定为常量：上升 +SLEW_RATE、下降 -SLEW_RATE；falling 未获 yaw 对正
+             * 许可时给定 0，速度环只剩阻尼。到位由状态机按实际位置判据切换，切走后
+             * 速度环退出，不依赖时间去“猜”是否到点。 */
+            if ((gimbal_state == gimbal_state_rising_e) || (gimbal_state == gimbal_state_falling_e))
+            {
+                float pitchdown_v_ref = 0.0f;
+                if (gimbal_state == gimbal_state_rising_e)
+                {
+                    pitchdown_v_ref = GIMBAL_POSTURE_SLEW_RATE;
+                }
+                else if (gimbal_fall_permitted)
+                {
+                    pitchdown_v_ref = -GIMBAL_POSTURE_SLEW_RATE;
+                }
+                pitchdown_motor_setref += GIMBAL_PITCHDOWN_VEL_KV * (pitchdown_v_ref - pitchdown_state.speed);
+            }
+
+            /* 最高点锁定：加固定偏置，补偿重力前馈残差 */
+            if (gimbal_state == gimbal_state_stand_e)
+            {
+                pitchdown_motor_setref += GIMBAL_PITCHDOWN_TORQUE_BIAS;
+            }
+        }
+
+        // setref-pitchup
+        AxisMitLiteRef_s pitchup_ref;
+        if (pitchup_use_cmd)
+        {
+            // 立起/直立：外部设定值来自 cmd（含规划器给的 v/a）
+            pitchup_ref.position = gimbal_cmd2gimbal_data.pitch_x;
+            pitchup_ref.speed = gimbal_cmd2gimbal_data.pitch_v;
+            pitchup_ref.acceleration = gimbal_cmd2gimbal_data.pitch_a;
+        }
+        else
+        {
+            // 姿态过渡/倒下保持：限速目标 + 对应速度前馈
+            pitchup_ref.position = pitchup_posture_ref;
+            pitchup_ref.speed = (dt_s > 0.0f) ? (pitchup_step / dt_s) : 0.0f;
+            pitchup_ref.acceleration = 0.0f;
+        }
         pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_state, &pitchup_ref);
-    }
-    // setref-pitchdown
-    if (pitch_on)
-    {
-        // 固定值+重力前馈+速度误差项+pitchup力矩单向叠加
-        float diejia_pitchup_motor_setref = 0; // 要叠加在pitchdown的力矩
-        float pitchdown_kd = 0;
-        if (pitchup_motor_setref < 0) // pitchup要单向的
+
+        /* 上 pitch 单向耦合：只在最高点锁定时生效。
+         * 上 pitch 输出为负时，其反作用需要下 pitch 同量补偿；
+         * 上升/下降/倒下阶段不叠加，避免过渡过程中两轴互相拖拽。 */
+        if ((gimbal_state == gimbal_state_stand_e) && (pitchup_motor_setref < 0.0f))
         {
-            diejia_pitchup_motor_setref = -pitchup_motor_setref;
+            pitchdown_motor_setref += -pitchup_motor_setref;
         }
-        if (pitchdown_pos < pitchdown_position_max - 0.2f) // 立起来就不要速度项了，但是在这个临界角度会问题
-        {
-            pitchdown_kd = 2;
-        }
-        pitchdown_motor_setref = 2.2f +                                                     // 固定值
-                                 1.0f * (pitchdown_position_max - pitchdown_pos) +          // 约等于重力前馈
-                                 pitchdown_kd * (2 - pitchdown_speed) +                     // 速度误差项
-                                 diejia_pitchup_motor_setref;                               // pitchup单向
     }
     // setref-yaw
     if (yaw_on)

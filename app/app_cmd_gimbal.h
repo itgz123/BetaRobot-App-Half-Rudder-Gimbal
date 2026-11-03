@@ -17,8 +17,13 @@ extern QueueHandle_t cmd2gimbal_queue_handle;
  * 驱动量有两个 —— cmd 的 robot_mode 定目标姿态（stop=失能、normal/gyro=直立、hole=倒下），
  * 下 pitch 位置定实际姿态；两者不一致时就落在两个过渡态上。
  * 行为差异（见 app_gimbal.c 的云台状态机）：
- *   失能：三轴输出 0；立起中/直立：三轴闭环跟随 cmd 设定值；
- *   倒下中/倒下：pitch 上下两轴 0（松劲、靠机构自重下垂），yaw 继续闭环。 */
+ *   失能：三轴输出 0；
+ *   立起中：下 pitch 用速度环驶向立起端，上 pitch 跟随 cmd 设定值；
+ *   直立：下 pitch = 重力前馈 + 固定偏置 + 上 pitch 单向耦合；
+ *   倒下中：等 yaw 相对底盘对正后，下 pitch 用速度环驶向倒下端、上 pitch 驶向 0
+ *           （未对正时下 pitch 速度给定 0，只做阻尼）；
+ *   倒下：下 pitch 输出 0（关闭重力前馈），上 pitch 保持在 0；
+ *         yaw 在除失能外的所有状态继续闭环。 */
 typedef enum : uint8_t
 {
     gimbal_state_disable_e = 0, // 失能
