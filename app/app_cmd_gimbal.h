@@ -42,8 +42,11 @@ typedef enum : uint8_t
  *                             cmd 的 yaw 规划器拿它当锚点、并原样回传给视觉。
  *   yaw_motor_*            —— yaw 电机编码器的关节角/角速度（rad, rad/s），即"云台相对底盘"。
  *                             无减速箱，位置为单圈绝对角、已 wrap 到 ±π（不做软件多圈累加）。
- *                             预留：底盘跟随 w = kp*wrap(-云台相对底盘角) 要用这一对，
- *                             现在 cmd 侧还没切过来（见 app_cmd.c 的 chassis_w_from_mode）。 */
+ *                             cmd 用它在本地算实测 θ（扣机械零位偏置）并旋转摇杆向量；
+ *                             底盘不接收实测角，而是自己从共享 CAN1 读同一颗 RS05。
+ *                             帧里的 gimbal2chassis_data.yaw 是**目标偏角** θ_ref
+ *                             （normal/hole = 0，gyro 斜坡），见 app_cmd.c 的
+ *                             chassis_yaw_target_from_mode 与底盘 ChassisWCommand。 */
 typedef struct
 {
     gimbal_state_e state;      // 云台实际姿态（失能/立起中/直立/倒下中/倒下）

@@ -4,7 +4,11 @@
 
 #### 1. 底盘
 
-接收发送指令（enabled,vx,vy,w），完成运动，反馈状态（vx,vy,w,姿态）
+接收发送指令（enabled,vx,vy,w,yaw），完成运动，反馈状态（vx,vy,w,姿态）。
+底盘自己从共享 CAN1 读取 yaw 电机（RS05）反馈，扣与云台相同的机械偏置得到实测相对角 θ；
+帧里的 yaw 是**目标偏角** θ_ref：normal/hole 为 0，gyro 按自转速度斜坡变化。
+跟随律 w = w_ff + PID(wrap(θ − θ_ref))，其中 w 字段只带云台侧的速度前馈/定值自转，
+PID 在底盘侧用自己读到的实测 θ 计算（见 app_chassis_force.c 的 ChassisWCommand）。
 
 #### 2. 云台
 

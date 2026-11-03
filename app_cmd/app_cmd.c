@@ -25,7 +25,7 @@
 /*
 底盘和云台都需要添加yaw轴前馈：
 chassis：ch3通道控制云台旋转，但是底盘需要等和云台出现相对角度误差了才旋转，导致出现延迟。
-         （已实现：机器人侧宏 chassis_follow_ff + chassis_w_from_mode 的前馈项）
+         （已实现：云台侧宏 chassis_follow_ff 算速度前馈，底盘侧 PID 把角度误差转成速度）
 gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等出现误差再纠正就延迟了。（先不加，做todo）
  */
 
@@ -132,11 +132,11 @@ COMM_DEF(vis_comm, MEDIA_USB_SIMPLE, VISUAL, VISUAL, vision_recv_t, 48, vision_s
  * （见 comm_proto_ext.h）。分块与帧长全在编译期定死，运行期只按已算好的 cfg 逐块编解码。
  * 云台侧 tx_id=0x100 段、rx_id=0x110 段（底盘侧对调）；ID 段与 CAN1 现有占用
  * （yaw RS05 0x001/0x0FD）及后续 3508 波盘（0x1FF/0x200/0x201~0x208）均不重叠。
- * 收发 payload 分别为 gimbal2chassis_data_t(14B) / chassis2gimbal_data_t(12B)：
- *   14B → 1 块 × 15B 编码区，整帧 19B（3 个 CAN 包）
+ * 收发 payload 分别为 gimbal2chassis_data_t(18B) / chassis2gimbal_data_t(12B)：
+ *   18B → 2 块 × 10B 编码区，整帧 24B（3 个 CAN 包）
  *   12B → 1 块 × 13B 编码区，整帧 17B（3 个 CAN 包）
  * CAN1 上挂有经典 CAN 的 RS05，故 mode 必须 CLASSIC（不可用 FD）。 */
-COMM_DEF(chassis_comm, MEDIA_CAN_IDSEQ, EXT, EXT, chassis2gimbal_data_t, 12, gimbal2chassis_data_t, 14, UNPACK_IN_ISR);
+COMM_DEF(chassis_comm, MEDIA_CAN_IDSEQ, EXT, EXT, chassis2gimbal_data_t, 12, gimbal2chassis_data_t, 18, UNPACK_IN_ISR);
 
 // AppCmdRun内部上下文
 static AppCmdRun_ctx_struct cmd_ctx;
@@ -291,36 +291,29 @@ static void input_update(void)
 }
 
 /*======== 处理层：统一上下文 → 各执行器设定值 =========*/
-/* 底盘自转速度 w (rad/s)：底盘是云台的纯伺服机构，只执行 (enabled, vx, vy, w)，
- * 模式相关的 w 全部在这里按状态机算好再发下去。
- *   normal / hole：跟随——把"云台相对底盘的角度"θ 拉回 0，底盘即转回云台指向
- *   gyro         ：定值自转（底盘自转、云台锁世界系航向，操作手照常瞄准），转速由 ch8 旋钮缩放
+/* 底盘自转的**云台侧前馈** (rad/s)。完整跟随律拆成两半：
+ *   云台侧（本文件）：随帧发 w_ff 与目标偏角 θ_ref
+ *   底盘侧（app_chassis_force.c 的 ChassisWCommand）：
+ *       实测 θ 由底盘直接读共享 CAN1 上的 RS05 得到，
+ *       w_out = w_ff + kp × wrap(θ_实测 − θ_ref)
+ *
+ * 为什么前馈和目标角留在云台：ω_yaw 是云台 yaw 轴的指令角速度，只有本板知道
+ * （规划器输出或视觉下发）。反馈 PID 只依赖底盘自己读到的最新 θ，下放到底盘
+ * 可以减少一次"编码器 → cmd → CAN → 底盘"的往返。
+ *
+ *   normal / hole：w_ff = ff × ω_yaw，θ_ref = 0（把相对角拉回 0）
+ *   gyro         ：w_ff = 定值自转角速度 spin，θ_ref 以 -spin 斜坡变化
+ *                  （见 chassis_yaw_target_from_mode）
  *   stop         ：0
  *
- * θ 是"云台相对底盘的夹角、逆时针为正"，由调用方算出后传入（见 send_chassis）。
- * 两边角度约定一致：yaw 电机 feedback_direction 已镜像成"逆时针为正"，
- * 底盘侧 w 的定义也是"逆时针为正"（见 app_chassis 的 HalfRudderInverse 注释）。
- *
- * 跟随律是"比例项 + 前馈项"：w = chassis_follow_kp × wrap(θ) + chassis_follow_ff × ω_yaw。
- * 比例项：底盘朝让 θ 归零的方向转（θ = 0 即云台指向与底盘前进方向重合），
- * 误差按 kp 的速率指数收敛。该律成立的前提是云台轴锁"世界系航向"（IMU 反馈）：
- * 底盘转动时云台的世界指向不动，θ 才会真的变化。若云台轴锁的是关节角，
- * 底盘一转云台就被拖着同转、θ 恒定，跟随环没有负反馈，w 会一直停在初值上自转。
- * 前馈项（ω_yaw = 云台 yaw 轴的指令角速度，由调用方传入）：比例项只能等 θ 建立误差后
- * 才动作，操作手推 yaw 摇杆时底盘起步慢半拍；前馈让底盘与云台"同速转"，
- * θ 根本不被拉开，kp 只收拾残余误差（详见 robot_def.h 的注释）。
- *
- * ⚠ 实车标定：先架空轮子给一个小 yaw 偏角，确认底盘转向能让 θ 归零；
- *   转向反了就把 kp 取负。本车在通信语义统一后 kp/ff 都是**正**的
- *   （底盘的 w>0 已实测为俯视逆时针；调试通路 w=-摇杆 与这里的 ff 也是同一方向）。
- *   再把 |kp| 从 1 左右往上加到跟得上又不抖。 */
-static inline float chassis_w_from_mode(float theta, float yaw_rate_cmd)
+ * 符号：ω_yaw 与底盘 w 都是"逆时针为正"，ff 必须为正。
+ * 标定时和底盘侧 CHASSIS_FOLLOW_KP/KI 一起看：前馈与 PID 必须同号，否则是在帮倒忙。 */
+static inline float chassis_w_from_mode(float yaw_rate_cmd)
 {
     if (robot_mode_gyro == cmd_ctx.mode)
     {
-        // gyro 档底盘在定速自转、云台锁世界系航向让操作手照常瞄准：两者互不跟随，
-        // 不加 yaw 前馈（否则瞄准时摇杆会叠加到自转速度上，自转不再是定值），
-        // 也不吃跟随限幅——这个定值按固定的中位缩放值恒等输出（原速度旋钮已改作视觉开关）
+        // 定值按固定的中位缩放值恒等输出（原速度旋钮已改作视觉开关）。
+        // 底盘侧 gyro 档只限幅 PID 输出，不压这个自转前馈
         return knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
     }
 
@@ -328,15 +321,50 @@ static inline float chassis_w_from_mode(float theta, float yaw_rate_cmd)
         return 0.0f; // stop：失能，w 给 0
 
     // 前馈：跟着云台的指令角速度一起转，底盘不等误差、起步即同步。
-    // 不受死区影响——云台静止时 ω_yaw 自然是 0，死区只需管住下面那个比例项
-    float w = chassis_follow_ff * yaw_rate_cmd;
-    // 死区内不跟随：θ 已经在 0 附近，再给比例项只会让车身被编码器噪声/传动回差推着来回蹭
-    if (Lib_Math_Fabs(theta) > chassis_follow_deadzone)
-        w += chassis_follow_kp * theta;
+    // 不受死区影响——云台静止时 ω_yaw 自然是 0，死区由底盘侧 PID 配置管
+    return chassis_follow_ff * yaw_rate_cmd;
+}
 
-    // 限幅只压在跟随输出（比例项 + 前馈）上：前馈可能会把 w 顶到云台 yaw_speed 那么大，
-    // 超出底盘能跟上的能力，限幅既防打滑也防标定发散的抖动
-    return Lib_Math_Clamp(w, -chassis_follow_w_limit, chassis_follow_w_limit);
+/* gyro 档目标偏角的积分状态。进入 gyro 的首拍用当前实测 θ 播种：目标若从 0
+ * 直接起步，会给底盘一个"把相对角拉回 0"的额外冲击。 */
+static float chassis_yaw_target = 0.0f;
+static robot_mode chassis_yaw_target_mode = robot_mode_stop;
+
+/* 云台→底盘的**目标相对角** θ_ref (rad)：θ = ψ_云台 − ψ_底盘，逆时针为正。
+ *   normal/hole：0
+ *   gyro       ：以实测 θ 为初值，按 -spin 斜坡（底盘逆时针自转时 θ 以 -spin 减小）
+ *   stop/其他  ：0
+ * dt 只用于 gyro 积分；模式取 cmd_ctx.mode，与帧里的 enabled 同源。 */
+static inline float chassis_yaw_target_from_mode(float dt_s)
+{
+    const robot_mode mode = cmd_ctx.mode;
+
+    if ((robot_mode_normal == mode) || (robot_mode_hole == mode))
+    {
+        chassis_yaw_target_mode = mode;
+        chassis_yaw_target = 0.0f;
+        return 0.0f;
+    }
+
+    if (robot_mode_gyro != mode)
+    {
+        chassis_yaw_target_mode = mode;
+        chassis_yaw_target = 0.0f;
+        return 0.0f;
+    }
+
+    // 实测相对角：与底盘侧同源（yaw 编码器关节角 − 机械零位偏置）
+    const float theta_actual =
+        Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
+    if (robot_mode_gyro != chassis_yaw_target_mode)
+        chassis_yaw_target = theta_actual; // 进入 gyro：从实际角起步，不跳变
+
+    chassis_yaw_target_mode = robot_mode_gyro;
+    const float spin = knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
+    // dt 上限：任务被长时间打断时不让目标角一下跳过太多（正常 2ms）
+    const float dt_use = (dt_s > 0.05f) ? 0.05f : dt_s;
+    chassis_yaw_target = Lib_Math_WrapAngleNegPIToPI(chassis_yaw_target - spin * dt_use);
+    return chassis_yaw_target;
 }
 
 /*======== 发送层 =========*/
@@ -433,9 +461,12 @@ static void send_gimbal(void)
  * 正常模式下车身本来就在被 w 拉向云台，θ 只是跟随滞后剩下的那点小角度，
  * 旋转量很小；等 θ 收敛到 0 就与"直接发车身系 vx/vy"等价。
  * 云台未使能（CMD_DEBUG_STAGE 无 gimbal 位）时走底盘直通：不做 θ 旋转，
- * w 也不由状态机解 —— 改成由空出来的云台 yaw 摇杆通道直接控，见下面的分支。 */
-static void send_chassis(void)
+ * w 也不由状态机解 —— 改成由空出来的云台 yaw 摇杆通道直接控，见下面的分支。
+ *
+ * dt：gyro 档目标偏角的积分步长（s），由 AppCmdRun 传入。 */
+static void send_chassis(float dt_s)
 {
+    (void)dt_s; // 底盘未使能时整条解算被编译掉，这里避免 unused 警告
 #if !CMD_DEBUG_ENABLED(CMD_DEBUG_STAGE_chassis)
     /* 底盘未在 CMD_DEBUG_STAGE 中使能：使能与三轴速度全部给 0，其余解算旁路。
      * 仍照常发送一帧，底盘侧收到的是"失能 + 零速"。 */
@@ -444,6 +475,10 @@ static void send_chassis(void)
     gimbal2chassis_data.vx = 0.0f;
     gimbal2chassis_data.vy = 0.0f;
     gimbal2chassis_data.w = 0.0f;
+    gimbal2chassis_data.yaw = 0.0f;
+    /* 目标角积分器回零：重新使能后进入 gyro 会重新用实测角播种 */
+    chassis_yaw_target = 0.0f;
+    chassis_yaw_target_mode = robot_mode_stop;
 #else
     /* 平动最大速度：速度旋钮（ch8）已改作视觉开关，这里固定取中位值 0，
      * 即 knob_scale(0) = chassis_translate_speed_min 与 ..._speed 的区间中点。
@@ -465,20 +500,35 @@ static void send_chassis(void)
      *   摇杆 -1~1 → 自转角速度，大小仍按 gyro 档那套固定中位值缩放；
      *   取负与云台 yaw 的约定保持一致：正摇杆 = 云台顺时针，底盘也该顺时针，
      *   而 w>0 是逆时针 ⇒ 这里必须取负（与 normal 档 ff=+1 的结果同向）；
-     *   死区照吃，摇杆回中 = 不转。 */
+     *   死区照吃，摇杆回中 = 不转。
+     * 这个模式没有云台跟随：档位报成 gyro，让底盘直接执行 w；目标偏角填当前
+     * 实测角，跟随误差恒为 0，不会额外叠加 PID 输出（stop 仍报 stop）。 */
+    gimbal2chassis_data.enabled = (robot_mode_stop == cmd_ctx.mode) ? robot_mode_stop : robot_mode_gyro;
     gimbal2chassis_data.vx = vx_stick;
     gimbal2chassis_data.vy = vy_stick;
     gimbal2chassis_data.w =
         -channel_deadzone(cmd_ctx.gimbal_yaw_channel) * knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
+    /* 目标角 = 实测角：底盘侧 e = wrap(θ_实测 − θ_ref) ≈ 0。
+     * 云台失能时编码器仍在回传 yaw_motor_position，故这里取当前值即可。 */
+    gimbal2chassis_data.yaw =
+        Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
+    chassis_yaw_target = 0.0f;
+    chassis_yaw_target_mode = robot_mode_stop;
 #else
     /* 云台指向相对底盘前进方向的真实夹角 θ (rad)，逆时针为正。
      * 取 yaw 电机编码器关节角（云台相对底盘）再减掉机械零位偏置：装配后编码器零位
      * 与"云台指向 = 底盘前进方向"对不齐，差的就是 chassis_gimbal_offset
      * （底盘前进方向本身已由底盘侧的舵轮零位标定好，云台这边只补这一个角）。
-     * 底盘跟随的 w 和摇杆向量的旋转都必须用这个 θ：一个决定车身转到哪，一个决定往哪走，
+     * 摇杆向量的旋转和底盘跟随都必须用这个 θ：一个决定往哪走，一个决定车身转到哪，
      * 两者不同源就会差一个偏置角（车身停在编码器零位，向量却按真实朝向旋转）。
      * 用的是 yaw_motor_position（编码器关节角）而不是 yaw_position —— 后者是 IMU 的
-     * 世界系航向，底盘一转就变，拿它做跟随会持续自转。 */
+     * 世界系航向，底盘一转就变，拿它做跟随会持续自转。
+     *
+     * θ 只在本板用于摇杆向量旋转。底盘不接收实测角：它从共享 CAN1 直接读同一颗
+     * RS05，自己扣同样的 chassis_gimbal_offset，拿到最新鲜的实测 θ。
+     * 本帧的 yaw 字段发的是**目标偏角** θ_ref（normal/hole = 0），
+     * 底盘用 wrap(θ_实测 − θ_ref) 作为 PID 输入。
+     * 云台只保留需要本板指令角速度的前馈项（见 chassis_w_from_mode）。 */
     float theta = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
     /* 摇杆向量专用角：把 θ 外推到「底盘真正执行本拍车体系速度」的时刻。
      * gyro 档云台锁世界系航向、底盘以实测 w 逆时针自转 ⇒ dθ/dt = -w。
@@ -488,9 +538,11 @@ static void send_chassis(void)
     float s = Lib_Math_Sin(theta_vec);
     gimbal2chassis_data.vx = c * vx_stick - s * vy_stick;
     gimbal2chassis_data.vy = s * vx_stick + c * vy_stick;
-    // 跟随环保持原样：仍用未补偿的 theta（不要把 theta_vec 传进去）
-    // w 含云台指令角速度前馈（同拍由 send_gimbal 写入 cmd_gimbal_yaw_rate_cmd）
-    gimbal2chassis_data.w = chassis_w_from_mode(theta, cmd_gimbal_yaw_rate_cmd);
+    // 目标偏角：normal/hole = 0，gyro 按自转速度斜坡（向量旋转仍用上面的 theta）
+    gimbal2chassis_data.yaw = chassis_yaw_target_from_mode(dt_s);
+    // w 只发前馈/自转部分，PID 由底盘用实测 θ 与 yaw 目标自行计算
+    // （前馈同拍由 send_gimbal 写入 cmd_gimbal_yaw_rate_cmd）
+    gimbal2chassis_data.w = chassis_w_from_mode(cmd_gimbal_yaw_rate_cmd);
 #endif // CMD_DEBUG_STAGE_CHASSIS_DIRECT
 #endif // !CMD_DEBUG_ENABLED(CMD_DEBUG_STAGE_chassis)
 
@@ -635,7 +687,6 @@ void AppCmdInit(void)
 
 ITCM_RAM void AppCmdRun(float dt, uint64_t time_stamp)
 {
-    (void)dt;
     (void)time_stamp;
     // 1. 收集反馈
     xQueueReceive(gimbal2cmd_queue_handle, &cmd_gimbal2cmd_data, 0);
@@ -645,8 +696,11 @@ ITCM_RAM void AppCmdRun(float dt, uint64_t time_stamp)
     input_update();
 
     // 3. 统一上下文 → 各执行器设定值并发送
-    send_gimbal();  // 给云台
-    send_chassis(); // 给底盘
+    send_gimbal(); // 给云台
+    /* APP_TASK_DEF 的 dt 是 ms；send_chassis 内部按秒积分 gyro 目标角。
+     * ⚠ 这里必须换算：直接传 ms 会让 θ_ref 以 25 倍速度旋转、每 ~39ms 绕一圈，
+     *   底盘 yaw PID 追不上就形成 ~25Hz 极限环，经逆解把舵角目标打得来回跳。 */
+    send_chassis(dt * 0.001f);
     send_shoot();   // 给射击
     send_vision();  // 给视觉
 }

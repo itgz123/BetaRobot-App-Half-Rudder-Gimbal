@@ -127,7 +127,8 @@ static float yaw_motor_setref = 0;
 /* “yaw 轴对准”判据：云台相对底盘前进方向的夹角 θ = wrap(yaw 编码器 - chassis_gimbal_offset)
  * 进入死区，且相对角速度足够小，才允许开始主动倒下。
  * 机械原因：倒下后云台沿底盘纵向折叠，yaw 没和底盘对正时折叠会别住/扫到车体。
- * hole 档底盘本来就在跟随把 θ 拉回 0（cmd 的 chassis_w_from_mode），所以这个条件会自然收敛。
+ * hole 档底盘本来就在跟随把 θ 拉回 0（底盘侧 ChassisWCommand 自己读共享 CAN1 的
+ * RS05 得到实测 θ），所以这个条件会自然收敛。
  * TODO 实车标定：以折叠不干涉为准；若希望“完全静止才倒下”，把速度阈值再改小。 */
 #define GIMBAL_YAW_ALIGN_EPS DEG_TO_RAD(6.0f)
 #define GIMBAL_YAW_ALIGN_SPEED DEG_TO_RAD(10.0f)
@@ -819,9 +820,10 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      * 否则 cmd 的规划器会拿"相对底盘"的锚点去规划"世界系"的目标，每帧都差一个底盘航向。
      * 同时视觉下发的 yaw 本就是世界系（见 app_cmd send_gimbal 的视觉分支），回传也对齐。
      * yaw_motor_* 另外回传编码器关节角（世界系量丢掉了"云台相对底盘"这一信息）：
-     *   ⚠ cmd 侧 chassis_w_from_mode 的底盘跟随 w = kp*wrap(-yaw_position) 要的是相对角，
-     *     现在拿的是世界系航向，normal/gyro 下会持续自转。这两个字段就是给它预留的，
-     *     cmd 侧切过来后，底盘跟随改用 yaw_motor_position/yaw_motor_vel 即可。 */
+     *   cmd 用它在本地算实测 θ 并旋转摇杆向量；底盘不接收实测角，而是自己从共享
+     *   CAN1 读同一颗 RS05。帧里的 gimbal2chassis_data.yaw 只是目标偏角 θ_ref。
+     *   因此这里必须回传编码器相对角，不能拿世界系 yaw_position 代替
+     *   （底盘一转它就变，目标角播种/向量旋转都会错）。 */
     gimbal2cmd_data_t gimbal2cmd_data = {
         .state = gimbal_state, // 云台实际姿态（cmd 可拿去判"云台到没到位/在不在动作中"）
         .pitch_position = pitchup_pos,
