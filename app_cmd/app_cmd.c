@@ -96,6 +96,7 @@ typedef struct
     uint8_t fire;               // 开火总闸（ch7）：0 = 关
     uint8_t power_boost_enable; // 额外功率开关（ch5）：0 = 关；随控制帧转发给底盘
     fire_mode_e fire_mode;      // 发射模式：fire=0 → 关；fire=1 → ch9 三段解出 单发/三连发/全自动
+    float fire_rate;            // 射频 (发/s)：视觉源由 enable_pitch_diff 换算；遥控源暂无来源
 
     // 归一化通道 (-1~1)：摇杆/开关中位 0
     float gimbal_pitch_channel;  // 云台 pitch
@@ -218,6 +219,7 @@ static void input_update(void)
     cmd_ctx.fire = 0;
     cmd_ctx.power_boost_enable = 0;
     cmd_ctx.fire_mode = fire_mode_off_e;
+    cmd_ctx.fire_rate = 0.0f;
     cmd_ctx.gimbal_pitch_channel = 0.0f;
     cmd_ctx.gimbal_yaw_channel = 0.0f;
     cmd_ctx.chassis_vx_channel = 0.0f;
@@ -288,6 +290,27 @@ static void input_update(void)
     default:
         break;
     }
+
+    /* 视觉接管云台时，发弹也交给视觉（覆盖上面由 ch7/ch9 解出的结果）：
+     *   enable_yaw_diff   = 0 不发弹 / 1 发弹（连发）→ 视觉没有"单发/三发"概念，按连发处理；
+     *   enable_pitch_diff = 弹频档 1/2/3 → 2/4/6 发/s，换算进 fire_rate 供 shoot 侧使用。
+     * 视觉无目标/开关关掉时 type 退回 sbus，ch7 的发射控制自动恢复。 */
+    if (visual_control_e == cmd_ctx.type)
+    {
+        if (vision_recv_data.enable_yaw_diff > 0.5f)
+        {
+            float rate = vision_recv_data.enable_pitch_diff * 2.0f; // 档位 → 发/s
+            cmd_ctx.fire = 1;
+            cmd_ctx.fire_mode = fire_mode_auto_e;
+            cmd_ctx.fire_rate = Lib_Math_Clamp(rate, 0.0f, 6.0f);
+        }
+        else
+        {
+            cmd_ctx.fire = 0;
+            cmd_ctx.fire_mode = fire_mode_off_e;
+            cmd_ctx.fire_rate = 0.0f;
+        }
+    }
 }
 
 /*======== 处理层：统一上下文 → 各执行器设定值 =========*/
@@ -354,8 +377,7 @@ static inline float chassis_yaw_target_from_mode(float dt_s)
     }
 
     // 实测相对角：与底盘侧同源（yaw 编码器关节角 − 机械零位偏置）
-    const float theta_actual =
-        Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
+    const float theta_actual = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
     if (robot_mode_gyro != chassis_yaw_target_mode)
         chassis_yaw_target = theta_actual; // 进入 gyro：从实际角起步，不跳变
 
@@ -424,9 +446,11 @@ static void send_gimbal(void)
         // 视觉源：直接给 位置/速度/加速度，不过规划器
         // 单位约定：视觉 pitch/yaw 为 deg（转 rad）；v/a 为 rad/s、rad/s²（不转）
         // 坐标系：pitch 为 base-relative（与 app_gimbal 一致）；yaw 为世界系（需标定对齐电机系）
-        cmd_cmd2gimbal_data.pitch_x = DEG_TO_RAD(vision_recv_data.pitch_base_relative);
-        cmd_cmd2gimbal_data.pitch_v = vision_recv_data.v_pitch_base_relative;
-        cmd_cmd2gimbal_data.pitch_a = vision_recv_data.a_pitch_base_relative;
+        /* 符号：视觉线协议的 pitch **负方向朝上**，本板内部 pitch 正方向朝上 → 三者一起取反
+         * （同一坐标轴镜像）。只反位置不反速度/加速度会让前馈与位置环互相打架。 */
+        cmd_cmd2gimbal_data.pitch_x = -DEG_TO_RAD(vision_recv_data.pitch_base_relative);
+        cmd_cmd2gimbal_data.pitch_v = -vision_recv_data.v_pitch_base_relative;
+        cmd_cmd2gimbal_data.pitch_a = -vision_recv_data.a_pitch_base_relative;
         cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
         cmd_cmd2gimbal_data.yaw_v = vision_recv_data.v_yaw;
         cmd_cmd2gimbal_data.yaw_a = vision_recv_data.a_yaw;
@@ -531,8 +555,7 @@ static void send_chassis(float dt_s)
         -channel_deadzone(cmd_ctx.gimbal_yaw_channel) * knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
     /* 目标角 = 实测角：底盘侧 e = wrap(θ_实测 − θ_ref) ≈ 0。
      * 云台失能时编码器仍在回传 yaw_motor_position，故这里取当前值即可。 */
-    gimbal2chassis_data.yaw =
-        Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
+    gimbal2chassis_data.yaw = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
     chassis_yaw_target = 0.0f;
     chassis_yaw_target_mode = robot_mode_stop;
 #else
@@ -605,8 +628,9 @@ static void send_shoot(void)
     }
     cmd_cmd2shoot_data.fire_mode = cmd_ctx.fire_mode; // ch7 电平已内含：off = ch7 断开（或 ch4 关/掉线）
 #endif
-    /* fire_rate 与两个裁判校准量暂无来源（射频标定、裁判消息链路都还没接），
-     * cmd_cmd2shoot_data 是文件级 static，零初始化后没人写过 → 这里保持 0。 */
+    /* 射频：视觉接管时由 enable_pitch_diff 换算（见 input_update），其余源为 0。
+     * 两个裁判校准量暂无来源（裁判消息链路还没接）→ 保持 0。 */
+    cmd_cmd2shoot_data.fire_rate = cmd_ctx.fire_rate;
     xQueueOverwrite(cmd2shoot_queue_handle, &cmd_cmd2shoot_data);
 }
 
@@ -625,10 +649,12 @@ static void send_vision(void)
     }
     // yaw/yaw_vel 回传的是 IMU 世界系量，与协议约定的"世界系 yaw"一致
     vision_send_data.yaw = RAD_TO_DEG(cmd_gimbal2cmd_data.yaw_position);
-    vision_send_data.pitch_base_relative = RAD_TO_DEG(cmd_gimbal2cmd_data.pitch_position);
+    /* pitch 与接收帧同一符号约定：线上 **负方向朝上**，本板内部正方向朝上 → 回传取反
+     * （位置/速度一致）。pitch_down 是下 pitch 机构位姿角，另一物理量，不参与镜像。 */
+    vision_send_data.pitch_base_relative = RAD_TO_DEG(-cmd_gimbal2cmd_data.pitch_position);
     vision_send_data.pitch_down = RAD_TO_DEG(cmd_gimbal2cmd_data.pitch_down_position); // 下pitch位姿角 (rad→deg)
     vision_send_data.yaw_vel = cmd_gimbal2cmd_data.yaw_vel;
-    vision_send_data.pitch_base_relative_vel = cmd_gimbal2cmd_data.pitch_vel;
+    vision_send_data.pitch_base_relative_vel = -cmd_gimbal2cmd_data.pitch_vel;
     // 暂无数据：
     vision_send_data.roll = 0;     // IMU roll（暂未通过队列回传）
     vision_send_data.roll_vel = 0; // IMU roll 角速度（暂未回传）
@@ -739,6 +765,6 @@ ITCM_RAM void AppCmdRun(float dt, uint64_t time_stamp)
      * ⚠ 这里必须换算：直接传 ms 会让 θ_ref 以 25 倍速度旋转、每 ~39ms 绕一圈，
      *   底盘 yaw PID 追不上就形成 ~25Hz 极限环，经逆解把舵角目标打得来回跳。 */
     send_chassis(dt * 0.001f);
-    send_shoot();   // 给射击
-    send_vision();  // 给视觉
+    send_shoot();  // 给射击
+    send_vision(); // 给视觉
 }

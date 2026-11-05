@@ -52,14 +52,15 @@ typedef enum : uint8_t
  *   ch7 电平不再单独下传：已全部编进 fire_mode —— off = ch7 断开（或 ch4 关/掉线），非 off
  *   = ch7 闭合（且 ch9 已解出 单发/三连发/全自动）。shoot 侧判"开火总闸闭合"用
  *   fire_mode != fire_mode_off_e 即可。
- *   尚未接线：fire_rate 与两个裁判校准量（cmd 侧暂无来源）、shoot2cmd 的
+ *   fire_rate 由视觉接管时的 enable_pitch_diff 换算（1/2/3 → 2/4/6 发/s），遥控源保持 0。
+ *   尚未接线：两个裁判校准量（cmd 侧暂无来源）、shoot2cmd 的
  *   remaining_heat / bullets_fired（friction_speed 已接线，用于过洞放行）。
  *============================================*/
 typedef struct
 {
     shoot_friction_mode_e friction_mode; // 摩擦轮模式：失能(0A) / 满速 / 缓慢减速到 0
     fire_mode_e fire_mode;               // 发射模式（ch7 闭合时由 ch9 三段解出；ch7 断开 = off）
-    float fire_rate;       // 射频 (发/s)
+    float fire_rate;                     // 射频 (发/s)
 
     /* 裁判系统校准量：cmd 收到裁判消息后原样下传，shoot 侧拿去校正本地弹道/热量模型 */
     float referee_heat;                 // 裁判系统枪口热量 (热量单位)

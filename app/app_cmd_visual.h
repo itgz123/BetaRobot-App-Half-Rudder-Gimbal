@@ -62,8 +62,8 @@ typedef struct
     float pitch_base_relative;        /* 视觉给出的总体 pitch：上 pitch 相对云台基座（视觉端 pitch，deg） */
     float target_yaw;                 /* 视觉预测的目标世界系 yaw（视觉端 target_yaw，deg） */
     float target_pitch_base_relative; /* 视觉预测的目标总体 pitch：上 pitch 相对云台基座（视觉端 target_pitch，deg） */
-    float enable_yaw_diff;            /* yaw 允许误差（当前 yaw 与 target_yaw 差绝对值 < 该值开火，deg） */
-    float enable_pitch_diff;          /* 与 target_pitch 配套的允许误差（deg） */
+    float enable_yaw_diff;            /* 是否发弹。0:不发弹；1:发弹（连发） */
+    float enable_pitch_diff;          /* 弹频。1:每秒2发；2:每秒4发；3:每秒6发 */
     float v_yaw;                      /* yaw 角速度前馈（视觉端 v_yaw，rad/s） */
     float v_pitch_base_relative;      /* base-relative pitch 角速度前馈（视觉端 v_pitch，rad/s） */
     float a_yaw;                      /* yaw 角加速度前馈（视觉端 a_yaw，rad/s²） */
