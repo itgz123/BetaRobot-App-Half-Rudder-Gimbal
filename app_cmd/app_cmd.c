@@ -70,6 +70,17 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 #define SBUS_CH_VISION 8      // 视觉控制开关（两段）：上 = 允许视觉接管云台（仍需视觉报有目标）
 #define SBUS_CH_FIRE_MODE 9   // 发射模式五档开关：关闭摩擦轮 / 单发 / 三连发 / 连发 / 退弹（预留）（非回中，无死区）
 
+/* 视觉直通路的限幅（cmd 不过规划器，直接把视觉给的 位置/速度/加速度 下发给云台）。
+ * 数值与摇杆规划器是同一套整定值（robot_def.h 的 pitch_speed 等），但用独立宏名：
+ * 视觉是外环直接给设定值，将来若要单独收紧/放宽，不必改动遥控手感。
+ * pitch 位置限位与规划器同坐标：0 = 上 pitch 水平（下 pitch 直立）。 */
+#define VISION_PITCH_POS_LIMIT_MIN (pitchup_position_1 - pitchup_position_2)
+#define VISION_PITCH_POS_LIMIT_MAX (pitchup_position_3 - pitchup_position_2)
+#define VISION_PITCH_SPEED_LIMIT (pitch_speed)
+#define VISION_PITCH_ACC_LIMIT (pitch_acceleration)
+#define VISION_YAW_SPEED_LIMIT (yaw_speed)
+#define VISION_YAW_ACC_LIMIT (yaw_acceleration)
+
 /* 原 ch8 速度旋钮已改作视觉开关：底盘平动与小陀螺速度固定取旋钮中位，
  * 即归一化通道值 0（knob_scale(0) = 速度区间中点），不再随遥控变化。 */
 #define SBUS_SPEED_CHANNEL_FIXED 0.0f
@@ -471,14 +482,22 @@ static void send_gimbal(void)
         // 坐标系：pitch 为 base-relative（与 app_gimbal 一致）；yaw 为世界系（需标定对齐电机系）
         /* 符号：视觉线协议的 pitch **负方向朝上**，本板内部 pitch 正方向朝上 → 三者一起取反
          * （同一坐标轴镜像）。只反位置不反速度/加速度会让前馈与位置环互相打架。 */
-        cmd_cmd2gimbal_data.pitch_x = -DEG_TO_RAD(vision_recv_data.pitch_base_relative);
-        cmd_cmd2gimbal_data.pitch_v = -vision_recv_data.v_pitch_base_relative;
-        cmd_cmd2gimbal_data.pitch_a = -vision_recv_data.a_pitch_base_relative;
+        /* 限幅：视觉是外环直通，异常/突变值会直接变成大误差和大前馈；这里夹到与规划器
+         * 相同的物理约束内（数值同源，宏独立命名，见文件头 VISION_*_LIMIT）。
+         * yaw 位置不限幅 —— 它是无限旋转轴，±π 环绕由 yaw 轴误差归一化处理。 */
+        cmd_cmd2gimbal_data.pitch_x = Lib_Math_Clamp(-DEG_TO_RAD(vision_recv_data.pitch_base_relative),
+                                                     VISION_PITCH_POS_LIMIT_MIN, VISION_PITCH_POS_LIMIT_MAX);
+        cmd_cmd2gimbal_data.pitch_v = Lib_Math_Clamp(-vision_recv_data.v_pitch_base_relative,
+                                                     -VISION_PITCH_SPEED_LIMIT, VISION_PITCH_SPEED_LIMIT);
+        cmd_cmd2gimbal_data.pitch_a = Lib_Math_Clamp(-vision_recv_data.a_pitch_base_relative,
+                                                     -VISION_PITCH_ACC_LIMIT, VISION_PITCH_ACC_LIMIT);
         cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
-        cmd_cmd2gimbal_data.yaw_v = vision_recv_data.v_yaw;
-        cmd_cmd2gimbal_data.yaw_a = vision_recv_data.a_yaw;
-        // 底盘跟随前馈：视觉转云台时底盘也要同步跟上，前馈同样取视觉给的角速度
-        cmd_gimbal_yaw_rate_cmd = vision_recv_data.v_yaw;
+        cmd_cmd2gimbal_data.yaw_v = Lib_Math_Clamp(vision_recv_data.v_yaw,
+                                                   -VISION_YAW_SPEED_LIMIT, VISION_YAW_SPEED_LIMIT);
+        cmd_cmd2gimbal_data.yaw_a = Lib_Math_Clamp(vision_recv_data.a_yaw,
+                                                   -VISION_YAW_ACC_LIMIT, VISION_YAW_ACC_LIMIT);
+        // 底盘跟随前馈：视觉转云台时底盘也要同步跟上，前馈取**限幅后**的角速度，与云台一致
+        cmd_gimbal_yaw_rate_cmd = cmd_cmd2gimbal_data.yaw_v;
     }
     else
     {
