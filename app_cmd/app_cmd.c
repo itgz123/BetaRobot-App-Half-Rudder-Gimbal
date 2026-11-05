@@ -43,7 +43,7 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 /* 分级调试开关（位掩码，宏定义见 app.h）：某一位为 1 表示该子系统参与控制。
  * 未置位的子系统在这里下发"零输出"：
  *   gimbal  → mode=stop（三轴零力矩，电机仍保持使能）
- *   shoot   → enable=0 + fire_mode=off（摩擦轮零电流；拨盘不看 enable，app_shoot.c 同样看该位）
+ *   shoot   → friction_mode=disable + fire_mode=off（摩擦轮与拨盘都零电流，app_shoot.c 同样看该位）
  *   chassis → 失能 + 三轴速度 0（链路照常发送）
  *   referee → 预留给裁判系统
  * ⚠ CMD_DEBUG_STAGE 本身是无括号的 | 组合，做位与时必须先加括号，
@@ -367,12 +367,33 @@ static inline float chassis_yaw_target_from_mode(float dt_s)
     return chassis_yaw_target;
 }
 
+/* 过洞放行：切到 hole 档时先停摩擦轮，等 shoot 回报转速已低于阈值，再把 hole 真正下发给云台。
+ * cmd_ctx.mode 是摇杆档位的**期望模式**（立即生效）；这里返回的是下发给云台的**生效模式**：
+ * 等待摩擦轮降速期间按 normal 下发，云台保持直立，不会轮子还在高速旋转就收进洞里。
+ * gimbal_fall_allowed 做**锁存**：一旦放行就不再收回 —— 转速在阈值附近抖一下不该让云台
+ * 反复立/倒；离开 hole 档即复位，下次过洞重新等。 */
+static uint8_t gimbal_fall_allowed = 0;
+static robot_mode gimbal_mode_effective(void)
+{
+    if (robot_mode_hole != cmd_ctx.mode)
+    {
+        gimbal_fall_allowed = 0; // 不在过洞档：复位，下次切 hole 重新等降速
+        return cmd_ctx.mode;
+    }
+    if ((0 == gimbal_fall_allowed) && (shoot_friction_speed_low_e == cmd_shoot2cmd_data.friction_speed_low))
+    {
+        gimbal_fall_allowed = 1;
+    }
+    return gimbal_fall_allowed ? robot_mode_hole : robot_mode_normal;
+}
+
 /*======== 发送层 =========*/
 // 给云台（队列）：统一上下文 → 位置/速度/加速度
 static void send_gimbal(void)
 {
     // 默认：失能（mode 由状态机给，stop 时 motor 侧不动作）+ 设定值清零
-    cmd_cmd2gimbal_data.mode = cmd_ctx.mode;
+    // 过洞档要等摩擦轮降速，故下发的是**生效模式**而不是 cmd_ctx.mode（见 gimbal_mode_effective）
+    cmd_cmd2gimbal_data.mode = gimbal_mode_effective();
     cmd_cmd2gimbal_data.pitch_x = 0.0f;
     cmd_cmd2gimbal_data.pitch_v = 0.0f;
     cmd_cmd2gimbal_data.pitch_a = 0.0f;
@@ -553,18 +574,35 @@ static void send_chassis(float dt_s)
 static void send_shoot(void)
 {
 #if !CMD_DEBUG_ENABLED(CMD_DEBUG_STAGE_shoot)
-    /* 发射未在 CMD_DEBUG_STAGE 中使能：只发 0 力矩 —— enable=0 让摩擦轮直接 0 电流，
-     * fire_mode=off 关掉拨弹状态机；拨盘那一路不看 enable，已由 app_shoot.c 同样按
-     * CMD_DEBUG_STAGE_shoot 位门控成 0 力矩。 */
-    cmd_cmd2shoot_data.enable = 0;
+    /* 发射未在 CMD_DEBUG_STAGE 中使能：只发 0 力矩 —— friction_mode=disable 让摩擦轮直接
+     * 0 电流、拨盘同样 0 电流，fire_mode=off 关掉拨弹状态机。 */
+    cmd_cmd2shoot_data.friction_mode = shoot_friction_disable_e;
     cmd_cmd2shoot_data.fire_mode = fire_mode_off_e;
 #else
-    /* 摩擦轮使能 = 总开关(ch4) 开着 且 云台已经立到直立位：
-     *   - ch4 断开 / 遥控掉线 → 失能（掉线时 sbus 数据是陈旧的，按"全部失能"的既有约定处理）；
-     *   - 云台在 失能/立起中/倒下中/倒下 → 失能，避免云台还没立起来/过洞收着就把弹打出去。
-     * 只看 gimbal_state_stand_e，不含立起中：位置环刚爬升那一段还没到位。 */
+    /* 摩擦轮三段模式的判定（按语义在这里定，shoot 侧只执行）：
+     *   - ch4 断开 / 遥控掉线 → disable（掉线时 sbus 数据是陈旧的，按"全部失能"的既有约定处理）；
+     *   - 期望档位是 hole → slowdown：先缓慢减速到 0，shoot 回报转速低于阈值后
+     *     gimbal_mode_effective 才放行云台倒下。等待期云台仍按 normal 保持在直立位，
+     *     若此时用 disable，轮子只靠摩擦自由滑行、降速太慢；用 slowdown 是速度环跟随斜坡。
+     *   - 云台直立 且 没有在等过洞 → spin（满速）；其余（失能/立起中/倒下中/倒下）→ disable，
+     *     避免云台还没立起来/过洞收着就把弹打出去。只看 gimbal_state_stand_e，不含立起中。 */
     uint8_t remote_on = (sbus_inst.daemon->is_online == 1) && (sbus_inst.sbus_data.ch[SBUS_CH_ENABLE] > sbus_half);
-    cmd_cmd2shoot_data.enable = (uint8_t)(remote_on && (cmd_gimbal2cmd_data.state == gimbal_state_stand_e));
+    if (0 == remote_on)
+    {
+        cmd_cmd2shoot_data.friction_mode = shoot_friction_disable_e;
+    }
+    else if (robot_mode_hole == cmd_ctx.mode)
+    {
+        cmd_cmd2shoot_data.friction_mode = shoot_friction_slowdown_e;
+    }
+    else if (gimbal_state_stand_e == cmd_gimbal2cmd_data.state)
+    {
+        cmd_cmd2shoot_data.friction_mode = shoot_friction_spin_e;
+    }
+    else
+    {
+        cmd_cmd2shoot_data.friction_mode = shoot_friction_disable_e;
+    }
     cmd_cmd2shoot_data.fire_mode = cmd_ctx.fire_mode; // ch7 电平已内含：off = ch7 断开（或 ch4 关/掉线）
 #endif
     /* fire_rate 与两个裁判校准量暂无来源（射频标定、裁判消息链路都还没接），

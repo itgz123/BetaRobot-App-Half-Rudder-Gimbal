@@ -44,6 +44,9 @@ static uint8_t trigger_burst = 0;    // 当前跑的是连发长轨迹（松手�
 static uint8_t trigger_settling = 0; // 正在走连发的收尾轨迹（终点为整数发边界、终点静止）
 /* 上一拍是否判为"卡住"：用来抓**脱困沿**（卡住→动起来）清速度环积分，见 §卡住保护 */
 static uint8_t trigger_stuck = 0;
+/* 上一拍射击子系统是否失能（摩擦轮 disable 模式）：用于抓进入失能的**边沿**，
+ * 把拨弹状态机强制拉回「关」—— 否则恢复后可能沿用失能前的发弹态继续打。 */
+static uint8_t shoot_disabled_last = 0;
 /* "卡住且输出顶在硬限幅附近"已连续保持的时长 (ms)：真卡死要**持续**超阈值才算，见 §卡住保护 */
 static float trigger_stuck_hold_ms = 0;
 /* 发数网格（见 app_shoot_def.h §发数网格）：参考位置恒为
@@ -435,34 +438,65 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
 
     // 2. 控制
     /* ---- 摩擦轮：使能满速 / 失能直接给 0 ----
-     * 使能：跑速度环（本阶段目标恒 = FRICTION_SPEED_FULL），反馈喂控制核、输出即电流；
-     * 失能：不跑控制核，直接 0 A，并清一次 PID —— 否则冻结的积分会带着旧值，下次使能
-     *       起步就是一脚踢。两种状态下电机都在收帧，C620 不掉线。
+     * 三段模式（cmd 下发，见 app_cmd_shoot.h 的 shoot_friction_mode_e）：
+     *   spin     ：跑速度环，目标恒 = FRICTION_SPEED_FULL；
+     *   slowdown ：参考按 FRICTION_SLOWDOWN_RATE 斜坡降到 0，速度环跟随 —— 平滑制动，
+     *              比"0 电流自由滑行"停得快，又不会像设定值阶跃那样一脚闷死；
+     *   disable  ：不跑控制核，直接 0 A，并清一次 PID —— 否则冻结的积分会带着旧值，下次
+     *              使能起步就是一脚踢。
+     * 模式（何时满速/减速/失能）**由 cmd 的 send_shoot 按语义算好**，本文件不再判云台姿态。
      * 机械方向（2026-10-10 看实机定，原为正向）：摩擦轮"正转"是另一个物理旋向 —— 由控制核
      * Config 的 motor_direction / feedback_direction **成对**声明（= 重定义正方向，闭环仍是负反馈）。
      * app 这里只传协议原始量、不再手写负号；⚠ 只反一个会变成正反馈。 */
     DrvDJIMotorBroadcastData_s fm = DrvDJIMotorBroadcastGetData(&friction_motor);
-    float friction_out = 0.0f; // 本拍下发给摩擦轮的电流指令 (A)：失能时恒 0，供 VOFA CH22 观测
-    if (shoot_cmd2shoot_data.enable)
+    float friction_out = 0.0f; // 本拍下发给摩擦轮的电流指令 (A)：失能/未调试时恒 0，供 VOFA CH22 观测
+#if !((CMD_DEBUG_STAGE) & (CMD_DEBUG_STAGE_shoot))
+    /* 发射未在 CMD_DEBUG_STAGE 中使能（宏见 app.h）：摩擦轮固定 0 力矩 —— 速度环整段旁路。
+     * 不调控制核也就没有积分残留（此分支下驱动核从头到尾不被使用），无需 Reset。 */
+    friction_motor_setref = 0.0f;
+    DrvDJIMotorBroadcastSetRef(&friction_motor, 0.0f);
+#else
+    if (shoot_friction_disable_e != shoot_cmd2shoot_data.friction_mode)
     {
-        friction_motor_setref = FRICTION_SPEED_FULL;
+        const float friction_dt_s = dt * 0.001f; // app 拿到的 dt 是**毫秒**，控制核要秒
+        if (shoot_friction_spin_e == shoot_cmd2shoot_data.friction_mode)
+        {
+            friction_motor_setref = FRICTION_SPEED_FULL;
+        }
+        else // slowdown：设定值斜坡降到 0（从上一拍的设定值接着降，切换不跳变）
+        {
+            friction_motor_setref -= FRICTION_SLOWDOWN_RATE * friction_dt_s;
+            if (friction_motor_setref < 0.0f)
+            {
+                friction_motor_setref = 0.0f;
+            }
+        }
         DrvlibMotorFeedback_s friction_fb = {
             .position = fm.position,
             .speed = fm.speed,
             .current = fm.current,
             .timestamp_us = fm.timestamp_us,
         };
-        /* app 拿到的 dt 是**毫秒**（见 bsp_app.h 的 APP_TASK_DEF 语义），控制核要秒 */
-        friction_out = DrvlibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, dt * 0.001f);
-        DrvDJIMotorBroadcastSetRef(&friction_motor, 0); // friction_out
+        friction_out = DrvlibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, friction_dt_s);
+        DrvDJIMotorBroadcastSetRef(&friction_motor, friction_out);
     }
-    else // 之后考虑刹车
+    else // disable：0 电流自由滑行
     {
         friction_motor_setref = 0.0f;
         DrvlibMotorReset(&friction_motor_ctrl); // 清 PID（含积分）与 LPF 状态，不动 enable 标志
         DrvDJIMotorBroadcastSetRef(&friction_motor, 0.0f);
     }
+#endif
     DrvDJIMotorBroadcastGroupSend(&friction_motor_group);
+
+    /* 过洞放行判据（shoot → cmd）：摩擦轮转速是否已低于阈值。
+     * cmd 切到 hole 档后先停摩擦轮、等这面旗变 low 才真正下发 hole，云台才倒下。
+     * 取 drv **原始**转速（未低通、未乘 feedback_direction）：判的是"轮子实际还在不在转"，
+     * 与极性无关，也比控制核内部 5 ms 低通更快。未收到过反馈时 speed 为 0 → 报 low
+     * （此时从未使能过，轮子不会转）；反馈掉线会保留最后值，仍偏高时保守不放行。 */
+    shoot_shoot2cmd_data.friction_speed_low = (fabsf(fm.speed) < FRICTION_SPEED_HOLE_THRESHOLD)
+                                              ? shoot_friction_speed_low_e
+                                              : shoot_friction_speed_high_e;
 
     // ---- 拨盘：拨弹状态机 + jerk 受限轨迹位置环 ----
     /* 机械方向（2026-10-10 看实机定）：拨盘"正转"是另一个物理旋向 —— 同样由控制核 Config 的
@@ -473,15 +507,37 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     /* 反馈结构体 trigger_fb 在下面 SetRef 前才构造 —— 发射未在 CMD_DEBUG_STAGE 中使能时
      * 位置环整段旁路、用不到它，放这里会是个未使用变量。 */
 
-    /* 状态机先刷 ch7 边沿（可能进入发弹状态并置 plan_request），再决定本拍怎么走 */
-    TriggerFsmUpdate();
+    /* 摩擦轮处于 disable = 射击子系统整体失能：拨盘也只发 0 电流（不再锁格点闭环/跑轨迹） */
+    const uint8_t shoot_disabled = (uint8_t)(shoot_friction_disable_e == shoot_cmd2shoot_data.friction_mode);
+
+    /* 状态机先刷 ch7 边沿（可能进入发弹状态并置 plan_request），再决定本拍怎么走。
+     * 失能期间不推进状态机：进入失能沿把状态强制拉回「关」（清掉发弹态），并同步 ch7 电平 ——
+     * 恢复后必须重新拨一次 ch7 才发弹，不会沿用失能前的状态、也不会补一次开火。
+     * 轨迹状态由下面 idle 分支统一清掉。 */
+    if (shoot_disabled)
+    {
+        if (!shoot_disabled_last)
+        {
+            /* 直接改 current：没有现成"强制到指定状态"的 API；各状态无退出动作，安全。
+             * 再跑一次「关」的进入动作，保证 plan_request / continuous 与新状态一致。 */
+            trigger_fsm.current = trigger_state_off_e;
+            trigger_fsm_actions[trigger_state_off_e].entry(&trigger_fsm_ctx);
+        }
+        trigger_fsm_ctx.fire_mode = shoot_cmd2shoot_data.fire_mode;
+        trigger_fsm_ctx.fire_last = (uint8_t)(shoot_cmd2shoot_data.fire_mode != fire_mode_off_e);
+    }
+    else
+    {
+        TriggerFsmUpdate();
+    }
+    shoot_disabled_last = shoot_disabled;
     const float trigger_dt_s = dt * 0.001f; // app 拿到的 dt 是毫秒，控制核要秒
     uint8_t firing = TriggerFsmIsFiring();
     uint8_t fb_valid = (t.timestamp_us != 0) ? 1 : 0; // 有 CAN 反馈才敢用位置/速度
     uint8_t burst_now = (uint8_t)(LibFsmTableCurrent(&trigger_fsm) == trigger_state_auto_e);
     uint8_t drive = 0; // 本拍是否在主动驱动机构（决定要不要清 PID、要不要锁位）
 
-    if (firing && fb_valid)
+    if (!shoot_disabled && firing && fb_valid)
     {
         /* ---------- 发弹中：跑本段整条轨迹（单发/三发/连发都是点到点，终点必在发数网格上） ---------- */
         drive = 1;
@@ -574,7 +630,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
             }
         }
     }
-    else if (trigger_burst && fb_valid)
+    else if (!shoot_disabled && trigger_burst && fb_valid)
     {
         /* ---------- 连发松手/断开：走一条收尾轨迹停在**整数发边界**，而不是就地硬停 ----------
          * 收尾目标 = **参考格号**再往前的那一格（终点仍是整数格、终点静止），并把参考格号一起
@@ -664,37 +720,49 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     float trigger_ref;
 #if !((CMD_DEBUG_STAGE) & (CMD_DEBUG_STAGE_shoot))
     /* 发射未在 CMD_DEBUG_STAGE 中使能（宏见 app.h）：拨盘也只发 0 力矩 —— 位置环整段旁路。
-     * 本文件不读 cmd 的 enable（拨盘只看 fire_mode），光靠 cmd 下发 fire_mode=off 仍会锁格点闭环，
-     * 故这道门控必须在这里。不调控制核也就没有积分残留（此分支下驱动核从头到尾不被使用），无需 Reset。
+     * 运行期的失能（cmd 下发 friction_mode = disable）不再锁格点闭环，见下面的 shoot_disabled 分支；
+     * 编译期的这道门控仍然必须保留 —— 直接发 fire_mode=off 也只能让状态机停在「关」，拨盘空闲锁位
+     * 依旧会输出保持电流。不调控制核也就没有积分残留（此分支下驱动核从头到尾不被使用），无需 Reset。
      * trigger_ref 在调试下没有参考可言，取实测位置占位 —— VOFA CH1/CH3 仍照发（CH3 恒 0）。 */
     trigger_ref = (float)trigger_motor_ctrl.data.position;
     float trigger_out = 0.0f;
 #else
-    /* 驱动时用上面的参考位置；空闲时设定值锁在**参考自己所在的那一格**上（不是实测位置）——
-     * 这是相位漂移的第二道闸（见 §发数网格）：收尾超调 / 带载滞后留下的偏差，会在空闲期被位置环
-     * 慢慢拉回格点，而不是像旧版"锁实测"那样把偏差固化成下一发的起点。
-     * ⚠ 基准是 **trigger_ref_shot** 而不是"实测的最近格点"：参考只前进、不看实测。第四版取实测的
-     *   最近格点，机构少走超半格时参考会**后退一整发**（退弹），已推翻。
-     * 还没有网格（开机首帧、或从未发过弹）时退回"锁实测"，与旧版一致。 */
-    if (drive)
+    float trigger_out;
+    if (shoot_disabled)
     {
-        trigger_ref = trigger_ref_out.position;
-    }
-    else if (trigger_grid_valid)
-    {
-        trigger_ref = TriggerGridShotPos(trigger_ref_shot);
+        /* 失能：拨盘只发 **0 电流**，而不是"零速度锁位" —— 位置环整段旁路，不调控制核
+         * 也就没有积分残留，无需 Reset。trigger_ref 取实测位置占位，VOFA CH1/CH3 仍照发。 */
+        trigger_ref = (float)trigger_motor_ctrl.data.position;
+        trigger_out = 0.0f;
     }
     else
     {
-        trigger_ref = (float)trigger_motor_ctrl.data.position;
+        /* 驱动时用上面的参考位置；空闲时设定值锁在**参考自己所在的那一格**上（不是实测位置）——
+         * 这是相位漂移的第二道闸（见 §发数网格）：收尾超调 / 带载滞后留下的偏差，会在空闲期被位置环
+         * 慢慢拉回格点，而不是像旧版"锁实测"那样把偏差固化成下一发的起点。
+         * ⚠ 基准是 **trigger_ref_shot** 而不是"实测的最近格点"：参考只前进、不看实测。第四版取实测的
+         *   最近格点，机构少走超半格时参考会**后退一整发**（退弹），已推翻。
+         * 还没有网格（开机首帧、或从未发过弹）时退回"锁实测"，与旧版一致。 */
+        if (drive)
+        {
+            trigger_ref = trigger_ref_out.position;
+        }
+        else if (trigger_grid_valid)
+        {
+            trigger_ref = TriggerGridShotPos(trigger_ref_shot);
+        }
+        else
+        {
+            trigger_ref = (float)trigger_motor_ctrl.data.position;
+        }
+        DrvlibMotorFeedback_s trigger_fb = {
+            .position = t.position,
+            .speed = t.speed,
+            .current = t.current,
+            .timestamp_us = t.timestamp_us,
+        };
+        trigger_out = DrvlibMotorSetRef(&trigger_motor_ctrl, trigger_ref, &trigger_fb, trigger_dt_s);
     }
-    DrvlibMotorFeedback_s trigger_fb = {
-        .position = t.position,
-        .speed = t.speed,
-        .current = t.current,
-        .timestamp_us = t.timestamp_us,
-    };
-    float trigger_out = DrvlibMotorSetRef(&trigger_motor_ctrl, trigger_ref, &trigger_fb, trigger_dt_s);
 #endif
 
     /* ---------------- 卡住判据（"要求它动、但机构没跟住"，口径见 app_shoot_def.h §卡住保护） ----------------
@@ -735,7 +803,11 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
 
     float trigger_cmd = trigger_out; // 方向已由控制核的 motor_direction 修正，这里不再取负
 
-    DrvDJIMotorBroadcastSetRef(&trigger_motor, 0); // trigger_cmd
+#if !((CMD_DEBUG_STAGE) & (CMD_DEBUG_STAGE_shoot))
+    DrvDJIMotorBroadcastSetRef(&trigger_motor, 0.0f); // 发射未调试：拨盘固定 0 力矩
+#else
+    DrvDJIMotorBroadcastSetRef(&trigger_motor, trigger_cmd);
+#endif
     DrvDJIMotorBroadcastGroupSend(&trigger_motor_group);
 
     /* 调试：拨盘**参考位置环**观测通道（本块自己发帧；app_gimbal 的 IMU 那路 VOFA 已关）。
@@ -751,7 +823,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      *   CH8  实测电流 (A，app 正向)：本电机 torque_constant=1，数值上 ≈ 力矩
      *   CH9  本拍 dt (ms)：确认控制周期；有跳变说明任务被拖或 CAN 掉帧
      *   CH10 状态机状态 (0关/1单发/2三发/3连发/4停止)
-     *   CH11 驱动条件 enable && fire_mode!=off（等价于 enable 且 ch7 闭合）(0/1)
+     *   CH11 驱动条件 friction_mode==spin && fire_mode!=off（满速且 ch7 闭合）(0/1)
      *   CH12 原始反馈转速 (rad/s，**电机极性**，未取反)：用于核对方向约定
      * ---- CH13~CH19：带负载整定用的控制核内部量（2026-10-11 加，调摩擦前馈/积分时看） ----
      *   ⚠ **极性分两套，别混**：控制核内部量（CH13/14/16/17/18）都在 **app 正向域**，
@@ -787,7 +859,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      *   CH20 摩擦轮实测转速 (rad/s, app 正向, **未低通**)      CH21 摩擦轮实测电流 (A, app 正向, **未低通**)
      *   CH22 摩擦轮速度环输出 = 实下发 (A, app 正向)            CH23 摩擦轮速度环 I 项 (A)
      *   CH24 摩擦轮速度误差 (rad/s)                             CH25 摩擦轮使能且在线 (0/1)
-     *        —— CH25 用来区分"过弹时没有尖峰"和"摩擦轮根本没转"（enable 断开或 CAN 掉线） */
+     *        —— CH25 用来区分"过弹时没有尖峰"和"摩擦轮根本没转"（失能或 CAN 掉线） */
     VofaSetChannel(1, trigger_ref);
     VofaSetChannel(2, (float)trigger_motor_ctrl.data.position);
     VofaSetChannel(3, trigger_ref - (float)trigger_motor_ctrl.data.position);
@@ -798,7 +870,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(8, -t.current); // 实测电流 (A)，app 正向：drv 原始量无方向，显式取负（未 LPF，保饱和判据）
     VofaSetChannel(9, dt);         // 本拍 dt (ms)：app 拿到的 dt 就是毫秒
     VofaSetChannel(10, (float)LibFsmTableCurrent(&trigger_fsm));
-    VofaSetChannel(11, (float)(shoot_cmd2shoot_data.enable && (shoot_cmd2shoot_data.fire_mode != fire_mode_off_e)));
+    VofaSetChannel(11, (float)((shoot_friction_spin_e == shoot_cmd2shoot_data.friction_mode) && (shoot_cmd2shoot_data.fire_mode != fire_mode_off_e)));
     VofaSetChannel(12, t.speed); // 原始反馈转速 (rad/s)，电机极性
     /* CH13~CH19：控制核内部量（app 正向域，见上面极性说明）。空闲拍仍照发，便于看停机后的残值 */
     VofaSetChannel(13, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].p_out);
@@ -814,7 +886,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(22, friction_out);                                                   // 速度环输出 = 实下发 (A)
     VofaSetChannel(23, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out);        // 速度环 I 项 (A)
     VofaSetChannel(24, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].error);        // 速度误差 (rad/s)
-    VofaSetChannel(25, (float)(shoot_cmd2shoot_data.enable && (fm.timestamp_us != 0))); // 使能且在线
+    VofaSetChannel(25, (float)((shoot_friction_disable_e != shoot_cmd2shoot_data.friction_mode) && (fm.timestamp_us != 0))); // 使能(含减速)且在线
     VofaSend();
 
     // 3. 发送

@@ -234,6 +234,17 @@
  *   drvlib/drvlib_motor/tools/analyze_trigger_spin.py。 */
 #define FRICTION_SPEED_FULL 400.0f
 
+/* 过洞放行阈值 (rad/s)：摩擦轮转速低于此值时，shoot 向 cmd 回报
+ * shoot_friction_speed_low_e，cmd 才把 hole 真正下发给云台（见 app_cmd.c 的
+ * gimbal_mode_effective）。取满速的 5%：轮子已基本停住，收云台不会让弹丸/轮子挂到洞沿。
+ * 只作判据、不参与控制；实际过洞时序偏紧/偏松时调这里。 */
+#define FRICTION_SPEED_HOLE_THRESHOLD 20.0f
+
+/* 摩擦轮"缓慢减速到 0"的参考减速度 (rad/s²)：cmd 给 slowdown 模式时，设定值不再直接
+ * 跳到 0，而是按本斜率从当前设定值斜坡降到 0（速度环跟随，得到平滑制动而不是阶跃）。
+ * 400 rad/s² → 满速(400)停到阈值(20)约 0.95 s；需要过洞前更快/更柔就调这里。 */
+#define FRICTION_SLOWDOWN_RATE 400.0f
+
 /* 拨盘摩擦前馈（库仑摩擦补偿）：拨盘摩擦大，全靠 PI 现爬会有启动迟滞和低速稳态差。
  * 前馈按运动方向直接给出"克服摩擦所需"的那份力矩，PI 只补模型误差和动态误差。
  * 加在速度环（力矩域）—— 位置环输出是速度、量纲不符；速度环输出才是力矩，
