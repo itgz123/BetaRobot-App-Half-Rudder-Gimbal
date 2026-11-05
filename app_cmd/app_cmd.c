@@ -36,9 +36,13 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 #define DEADZONE (0.01f)
 #define sbus_half 0.5 // 判断开关通道float等于1/-1/0
 
-/* 发射模式在 ch9 上的三段分界：把 -1~1 等分，-1 端 → +1 端依次为 单发/三连发/全自动。
- * 旋钮不回中（-1 和 +1 都是有效停位），故按等分取，不设回中死区。 */
-#define FIRE_MODE_SEG (1.0f / 3.0f)
+/* 发射模式在 ch9 上的五段分界：标准五档开关停位约 -1 / -0.5 / 0 / +0.5 / +1，
+ * 依次为 关闭摩擦轮 / 单发 / 三连发 / 连发 / 退弹（预留）。分界取相邻停位中点 ±0.75 / ±0.25。
+ * 开关不回中（两端都是有效停位），故按等分取，不设回中死区。 */
+#define FIRE_MODE_SEG_1 (-0.75f) // 关闭摩擦轮 | 单发
+#define FIRE_MODE_SEG_2 (-0.25f) // 单发 | 三连发
+#define FIRE_MODE_SEG_3 (0.25f)  // 三连发 | 连发
+#define FIRE_MODE_SEG_4 (0.75f)  // 连发 | 退弹（预留）
 
 /* 分级调试开关（位掩码，宏定义见 app.h）：某一位为 1 表示该子系统参与控制。
  * 未置位的子系统在这里下发"零输出"：
@@ -64,7 +68,7 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 #define SBUS_CH_MODE 6        // 档位开关（三档）：hole / normal / gyro
 #define SBUS_CH_FIRE 7        // 开火总闸（两段开关）：0 = 关，1 = 由下面这个旋钮选模式
 #define SBUS_CH_VISION 8      // 视觉控制开关（两段）：上 = 允许视觉接管云台（仍需视觉报有目标）
-#define SBUS_CH_FIRE_MODE 9   // 发射模式旋钮：ch7=1 时把 -1~1 等分三段选 单发/三连发/全自动（非回中，无死区）
+#define SBUS_CH_FIRE_MODE 9   // 发射模式五档开关：关闭摩擦轮 / 单发 / 三连发 / 连发 / 退弹（预留）（非回中，无死区）
 
 /* 原 ch8 速度旋钮已改作视觉开关：底盘平动与小陀螺速度固定取旋钮中位，
  * 即归一化通道值 0（knob_scale(0) = 速度区间中点），不再随遥控变化。 */
@@ -95,7 +99,11 @@ typedef struct
     robot_mode mode;            // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
     uint8_t fire;               // 开火总闸（ch7）：0 = 关
     uint8_t power_boost_enable; // 额外功率开关（ch5）：0 = 关；随控制帧转发给底盘
-    fire_mode_e fire_mode;      // 发射模式：fire=0 → 关；fire=1 → ch9 三段解出 单发/三连发/全自动
+    /* ch9 五档选择器停在"关闭摩擦轮"段（与 ch7 无关，始终生效）。
+     * fire_mode 编码不了这一档：它表达的是"关火"，而关闭摩擦轮是另一件事
+     * （ch7 断开时轮子本来也允许转，见 send_shoot）。 */
+    uint8_t friction_off;
+    fire_mode_e fire_mode;      // 发射模式：fire=0 → 关；fire=1 → ch9 五段解出 单发/三连发/连发/退弹
     float fire_rate;            // 射频 (发/s)：视觉源由 enable_pitch_diff 换算；遥控源暂无来源
 
     // 归一化通道 (-1~1)：摇杆/开关中位 0
@@ -218,6 +226,7 @@ static void input_update(void)
     cmd_ctx.mode = robot_mode_stop;
     cmd_ctx.fire = 0;
     cmd_ctx.power_boost_enable = 0;
+    cmd_ctx.friction_off = 0;
     cmd_ctx.fire_mode = fire_mode_off_e;
     cmd_ctx.fire_rate = 0.0f;
     cmd_ctx.gimbal_pitch_channel = 0.0f;
@@ -249,24 +258,29 @@ static void input_update(void)
      * 总开关关闭/遥控掉线时上面已默认 0。 */
     cmd_ctx.power_boost_enable = (sbus_inst.sbus_data.ch[SBUS_CH_POWER_BOOST] > sbus_half) ? 1u : 0u;
 
-    /* 发射：ch7 是总闸（两段开关），ch7 = 1 时由 ch9 旋钮在 -1~1 上等分三段选模式。
-     * 两个都按"开关量"在这里直接读 sbus（ch9 现在是选择器，不再是旋钮通道）。
-     * 极性：-1 端 → +1 端依次为 单发 / 三连发 / 全自动。 */
-    cmd_ctx.fire = (sbus_inst.sbus_data.ch[SBUS_CH_FIRE] > sbus_half) ? 1 : 0;
-    if (cmd_ctx.fire == 0)
+    /* 发射：ch9 是五档选择器（-1 端 → +1 端）：关闭摩擦轮 / 单发 / 三连发 / 连发 / 退弹（预留）；
+     * ch7 是开火总闸（两段开关），只有 ch7 = 1 时选择的 单发/三连发/连发/退弹 才真正下发。
+     * "关闭摩擦轮"段不受 ch7 影响、始终生效 —— 它是摩擦轮的总关，与是否发弹无关，
+     * 具体在 send_shoot 里优先于直立/过洞判断。 */
+    float fm = sbus_inst.sbus_data.ch[SBUS_CH_FIRE_MODE];
+    fire_mode_e fire_sel;
+    cmd_ctx.friction_off = 0;
+    if (fm < FIRE_MODE_SEG_1)
     {
-        cmd_ctx.fire_mode = fire_mode_off_e;
+        fire_sel = fire_mode_off_e;
+        cmd_ctx.friction_off = 1;
     }
+    else if (fm < FIRE_MODE_SEG_2)
+        fire_sel = fire_mode_single_e;
+    else if (fm < FIRE_MODE_SEG_3)
+        fire_sel = fire_mode_triple_e;
+    else if (fm < FIRE_MODE_SEG_4)
+        fire_sel = fire_mode_auto_e;
     else
-    {
-        float fm = sbus_inst.sbus_data.ch[SBUS_CH_FIRE_MODE];
-        if (fm < -FIRE_MODE_SEG)
-            cmd_ctx.fire_mode = fire_mode_single_e;
-        else if (fm < FIRE_MODE_SEG)
-            cmd_ctx.fire_mode = fire_mode_triple_e;
-        else
-            cmd_ctx.fire_mode = fire_mode_auto_e;
-    }
+        fire_sel = fire_mode_unjam_e; // 退弹：shoot 侧预留，暂按不开火处理
+
+    cmd_ctx.fire = (sbus_inst.sbus_data.ch[SBUS_CH_FIRE] > sbus_half) ? 1 : 0;
+    cmd_ctx.fire_mode = (cmd_ctx.fire != 0) ? fire_sel : fire_mode_off_e;
 
     // 云台控制权：视觉开关（ch8）打开且视觉有目标 → 交给视觉，否则由摇杆控制
     if ((sbus_inst.sbus_data.ch[SBUS_CH_VISION] > sbus_half) && (vision_appear_e == vision_recv_data.appear))
@@ -310,6 +324,15 @@ static void input_update(void)
             cmd_ctx.fire_mode = fire_mode_off_e;
             cmd_ctx.fire_rate = 0.0f;
         }
+    }
+
+    /* "关闭摩擦轮"段是机械安全选择：无论输入源（ch7 / 视觉）怎么要求，都强制停火，
+     * 避免摩擦轮不转时拨盘硬推弹丸。摩擦轮模式在 send_shoot 里同样被该位压成 disable。 */
+    if (cmd_ctx.friction_off)
+    {
+        cmd_ctx.fire = 0;
+        cmd_ctx.fire_mode = fire_mode_off_e;
+        cmd_ctx.fire_rate = 0.0f;
     }
 }
 
@@ -621,6 +644,7 @@ static void send_shoot(void)
 #else
     /* 摩擦轮三段模式的判定（按语义在这里定，shoot 侧只执行）：
      *   - ch4 断开 / 遥控掉线 → disable（掉线时 sbus 数据是陈旧的，按"全部失能"的既有约定处理）；
+     *   - ch9 停在"关闭摩擦轮"段 → disable（操作手显式停轮，优先级高于下面所有按姿态的自动判断）；
      *   - 期望档位是 hole → slowdown：先缓慢减速到 0，shoot 回报转速低于阈值后
      *     gimbal_mode_effective 才放行云台倒下。等待期云台仍按 normal 保持在直立位，
      *     若此时用 disable，轮子只靠摩擦自由滑行、降速太慢；用 slowdown 是速度环跟随斜坡。
@@ -628,6 +652,10 @@ static void send_shoot(void)
      *     避免云台还没立起来/过洞收着就把弹打出去。只看 gimbal_state_stand_e，不含立起中。 */
     uint8_t remote_on = (sbus_inst.daemon->is_online == 1) && (sbus_inst.sbus_data.ch[SBUS_CH_ENABLE] > sbus_half);
     if (0 == remote_on)
+    {
+        cmd_cmd2shoot_data.friction_mode = shoot_friction_disable_e;
+    }
+    else if (cmd_ctx.friction_off)
     {
         cmd_cmd2shoot_data.friction_mode = shoot_friction_disable_e;
     }
@@ -643,7 +671,7 @@ static void send_shoot(void)
     {
         cmd_cmd2shoot_data.friction_mode = shoot_friction_disable_e;
     }
-    cmd_cmd2shoot_data.fire_mode = cmd_ctx.fire_mode; // ch7 电平已内含：off = ch7 断开（或 ch4 关/掉线）
+    cmd_cmd2shoot_data.fire_mode = cmd_ctx.fire_mode; // ch7 电平已内含：off = ch7 断开 / 关闭摩擦轮段 / ch4 关/掉线
 #endif
     /* 射频：视觉接管时由 enable_pitch_diff 换算（见 input_update），其余源为 0。
      * 两个裁判校准量暂无来源（裁判消息链路还没接）→ 保持 0。 */

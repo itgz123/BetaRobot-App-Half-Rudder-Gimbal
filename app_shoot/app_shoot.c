@@ -186,6 +186,14 @@ static const LibFsmTableStateActions_s trigger_fsm_actions[] = {
 LIB_FSM_TABLE_CHECK_ACTIONS(trigger_fsm_actions, (uint32_t)trigger_state_count_e);
 
 /*---------------- 每拍推进 ----------------*/
+/* 是否处于"开火中"：只有 单发/三连发/连发 三种。off（ch7 断开）和预留的 unjam 都不算。
+ * ⚠ 不能用 fire_mode != off 判：ch9 停在"退弹"段时那一位非 off，会让 fire_last 提前变 1，
+ *   之后拨回 单发/三连发/连发 时没有上升沿，状态机永远进不了发弹态。 */
+static inline uint8_t TriggerFsmFireActive(fire_mode_e mode)
+{
+    return (uint8_t)((mode == fire_mode_single_e) || (mode == fire_mode_triple_e) || (mode == fire_mode_auto_e));
+}
+
 /* 事件来源：ch7 电平（cmd 把 ch7 与 ch9 一起编码进 fire_mode）→ 上升/下降沿；
  *           "本步轨迹走完"由 AppShootRun 喂进来（TriggerFsmNotifyStepDone）。
  * 两件事分开做：先 Update 刷 ch7 边沿（可能进入发弹状态、置 plan_request），
@@ -198,7 +206,7 @@ static void TriggerFsmUpdate(void)
     c->fire_mode = shoot_cmd2shoot_data.fire_mode;
 
     /* ch7 边沿 */
-    uint8_t fire_now = (c->fire_mode != fire_mode_off_e) ? 1 : 0;
+    uint8_t fire_now = TriggerFsmFireActive(c->fire_mode);
     if (fire_now != c->fire_last)
     {
         LibFsmTableDispatch(&trigger_fsm, (fire_now != 0) ? trigger_ev_fire_on_e : trigger_ev_fire_off_e, NULL);
@@ -524,7 +532,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
             trigger_fsm_actions[trigger_state_off_e].entry(&trigger_fsm_ctx);
         }
         trigger_fsm_ctx.fire_mode = shoot_cmd2shoot_data.fire_mode;
-        trigger_fsm_ctx.fire_last = (uint8_t)(shoot_cmd2shoot_data.fire_mode != fire_mode_off_e);
+        trigger_fsm_ctx.fire_last = TriggerFsmFireActive(shoot_cmd2shoot_data.fire_mode);
     }
     else
     {
@@ -870,7 +878,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(8, -t.current); // 实测电流 (A)，app 正向：drv 原始量无方向，显式取负（未 LPF，保饱和判据）
     VofaSetChannel(9, dt);         // 本拍 dt (ms)：app 拿到的 dt 就是毫秒
     VofaSetChannel(10, (float)LibFsmTableCurrent(&trigger_fsm));
-    VofaSetChannel(11, (float)((shoot_friction_spin_e == shoot_cmd2shoot_data.friction_mode) && (shoot_cmd2shoot_data.fire_mode != fire_mode_off_e)));
+    VofaSetChannel(11, (float)((shoot_friction_spin_e == shoot_cmd2shoot_data.friction_mode) && TriggerFsmFireActive(shoot_cmd2shoot_data.fire_mode)));
     VofaSetChannel(12, t.speed); // 原始反馈转速 (rad/s)，电机极性
     /* CH13~CH19：控制核内部量（app 正向域，见上面极性说明）。空闲拍仍照发，便于看停机后的残值 */
     VofaSetChannel(13, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].p_out);
