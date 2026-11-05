@@ -466,14 +466,31 @@ static void send_gimbal(void)
 
         // pitch：限幅模式（有机械限位）。目标位置由 planner 内部开环累加，下面两个
         // current_* 只在 seed 拍被用来重新锚定累加器（电流外推不再读反馈位置）
-        in.current_position = cmd_gimbal2cmd_data.pitch_position;
-        in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
-        in.current_acceleration = 0.0f; // 电机无加速度反馈
-        in.target_cmd = channel_deadzone(cmd_ctx.gimbal_pitch_channel);
-        PlannerCalculate(&pitch_planner, &in, &out);
-        cmd_cmd2gimbal_data.pitch_x = out.position;
-        cmd_cmd2gimbal_data.pitch_v = out.speed;
-        cmd_cmd2gimbal_data.pitch_a = out.acceleration;
+        if (robot_mode_hole == cmd_ctx.mode)
+        {
+            /* 过洞档：**不对 pitch 通道累加**，并把累加器直接钉在 0 = 上 pitch 水平
+             * （规划器坐标以 pitchup_position_2「下 pitch 直立、上 pitch 水平」为原点，
+             * 限位就是 pitchup_position_1/3 - pitchup_position_2）。
+             * 若折叠期间仍按摇杆积分，残留的"低头"目标会在下一次立起时被直接执行 ——
+             * 上升阶段上 pitch 跟随 cmd 设定值，就会往车体里扎。钉 0 后每次直立都从
+             * 水平开始，立起来以后再按摇杆累加。 */
+            pitch_planner.ref_position = 0.0f;
+            pitch_planner.position_valid = 1; // 已播种，恢复直立时不再用实测位置重锚
+            cmd_cmd2gimbal_data.pitch_x = 0.0f;
+            cmd_cmd2gimbal_data.pitch_v = 0.0f;
+            cmd_cmd2gimbal_data.pitch_a = 0.0f;
+        }
+        else
+        {
+            in.current_position = cmd_gimbal2cmd_data.pitch_position;
+            in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
+            in.current_acceleration = 0.0f; // 电机无加速度反馈
+            in.target_cmd = channel_deadzone(cmd_ctx.gimbal_pitch_channel);
+            PlannerCalculate(&pitch_planner, &in, &out);
+            cmd_cmd2gimbal_data.pitch_x = out.position;
+            cmd_cmd2gimbal_data.pitch_v = out.speed;
+            cmd_cmd2gimbal_data.pitch_a = out.acceleration;
+        }
 
         // yaw：环绕模式（无限旋转）。累加器以 IMU 世界系航向为锚点（播种拍），与云台侧 yaw 轴的
         // 反馈同源，所以累加出的目标直接就是世界系角度，不需要在两边做坐标系换算。
