@@ -78,7 +78,7 @@
 #define LOG_UART UART_7
 #define TERMINAL_LITE_UART UART_10 // terminal_lite 调参串口（空闲且 RX/TX DMA 已配）
 #elif DEVELOPMENT_BOARD == DJI_C   // UART_1:4pin,UART_6:3pin
-#define VOFA_UART UART_6
+#define VOFA_UART UART_1
 // #define LOG_UART UART_6
 // #define TERMINAL_LITE_UART UART_1 // 若需用 terminal 调参，取消注释（需接 USB-TTL；与裁判系统互斥）
 #elif DEVELOPMENT_BOARD == DJI_A

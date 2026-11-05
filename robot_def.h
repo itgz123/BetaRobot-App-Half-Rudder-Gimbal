@@ -58,7 +58,7 @@
  * 标定：车静止，手动把云台指向摆到与底盘前进方向一致，读 yaw 电机的 position
  * （即 gimbal2cmd 回传的 yaw_motor_position），读数就是该填的值。
  * 未标定时填 0：退化为"编码器零位即对正"。 */
-#define chassis_gimbal_offset DEG_TO_RAD(15.0f)
+#define chassis_gimbal_offset DEG_TO_RAD(30.0f)
 
 /* 摇杆向量旋转角的执行延迟补偿时间 T (s)，只作用于 send_chassis 的向量旋转。
  *

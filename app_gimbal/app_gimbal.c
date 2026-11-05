@@ -405,9 +405,11 @@ void AppGimbalInit(void)
                 .amplitude = 0.1f,
                 .duration = 1,
                 .num_freqs = 10,
-            },      // 多正弦叠加参数
-        .kp = 4,    // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
-        .kd = 0.4f, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+            }, // 多正弦叠加参数
+        /* 973129e 为对接视觉把 kp/kd 从 6/0.6 调小到 4/0.4（terminal_lite 试调参），
+         * 之后一直没恢复。这里回到 973129e 上一提交（c89d753）的整定值 6/0.6。 */
+        .kp = 24,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
+        .kd = 0.6f, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 
@@ -468,9 +470,11 @@ void AppGimbalInit(void)
                 .amplitude = 0.1f,
                 .duration = 1,
                 .num_freqs = 10,
-            },      // 多正弦叠加参数
-        .kp = 1,    // 位置增益
-        .kd = 0.1f, // 速度增益
+            }, // 多正弦叠加参数
+        /* 同样恢复 973129e 之前的 yaw 整定值 48/0.8（973129e 曾调小到 1/0.1，
+         * 使 yaw 几乎只剩前馈、抗扰和跟随都很软）。 */
+        .kp = 20,   // 位置增益
+        .kd = 0.8f, // 速度增益
         // yaw 是 WRAP 环绕轴（±π 归一化）：误差需取最短路径，否则边界处跳变
         .error_normalize_range = 2.0f * M_PI, // 误差 wrap 到 [-π, π)
         .error_normalize_enable = 1,          // 启用环绕误差归一化
