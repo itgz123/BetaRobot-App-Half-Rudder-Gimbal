@@ -52,16 +52,16 @@ static float trigger_stuck_hold_ms = 0;
 /* 发数网格（见 app_shoot_def.h §发数网格）：参考位置恒为
  *     trigger_grid_origin + trigger_ref_shot × TRIGGER_STEP_ADVANCE_RAD
  * 锚点 trigger_grid_origin 只在开机第一发规划时锚一次（假设那时机构停在某个整数位置），
- * **永不重锚**；trigger_ref_shot 就是"参考站在第几格"，每发规划只 **+= N**。
- * ⚠ 参考**只前进、不看实测**：实测位置只当轨迹起点用。第四版拿"实测的最近格点"当基准，
- *   机构少走超半格时参考会**后退一整发**（退弹），已推翻。 */
+ * **永不重锚**；trigger_ref_shot 就是"参考站在第几格"，每发规划只 **+= N**（退弹 = -1）。
+ * ⚠ 参考**只按发数走、不看实测**：实测位置只当轨迹起点用。第四版拿"实测的最近格点"当基准，
+ *   机构少走超半格时参考会意外后退一整发，已推翻 —— 后退只能由**退弹模式显式**触发。 */
 static float trigger_grid_origin = 0;
 static int32_t trigger_ref_shot = 0;
 static uint8_t trigger_grid_valid = 0;
 
 /*============================================
  *        拨弹状态机（lib_fsm_table）
- *   状态：关 / 单发 / 三发 / 连发 / 停止
+ *   状态：关 / 单发 / 三发 / 连发 / 退弹 / 停止
  *   事件：ch7 上升沿 / ch7 下降沿 / 本步轨迹走完（step_done）
  *   设计要点：
  *   - 发射模式（ch9）只在「关 + ch7 上升沿」这一拍读取，之后锁在所进的状态里；中途改
@@ -74,7 +74,7 @@ static uint8_t trigger_grid_valid = 0;
  *     整数发网格上（单发 1 发、三发 3 发、连发 500 发），finished 就是"这一发/这三发打完"。
  *     连发跑完 500 发在「连发」里原地续段，不产生 step_done。
  *   - 进入发弹状态时置 ctx->plan_request，AppShootRun 据此规划本段的**整条**轨迹。
- *   - ctx->continuous 由进入动作置位：三发/连发 = 1（一条长轨迹），单发/关/停止 = 0（单步）。
+ *   - ctx->continuous 由进入动作置位：三发/连发 = 1（一条长轨迹），单发/退弹/关/停止 = 0（单步）。
  *============================================*/
 typedef enum : uint8_t
 {
@@ -82,6 +82,7 @@ typedef enum : uint8_t
     trigger_state_single_e,  // 单发：走完 1 发（点到点，起停包络）
     trigger_state_triple_e,  // 三发：连续拨，走满 3 份行程后停
     trigger_state_auto_e,    // 连发：连续拨，ch7 断开才停
+    trigger_state_unjam_e,   // 退弹：反向走一整格（一次 ch7 上升沿走一格）
     trigger_state_stop_e,    // 停止：已打完/已停稳，等 ch7 断开
     trigger_state_count_e,   // 状态值域上界（= 进入动作表项数）
 } trigger_state_e;
@@ -146,6 +147,11 @@ static bool TriggerFsmGuardAuto(void *ctx, const void *event_data)
     (void)event_data;
     return ((TriggerFsmCtx_s *)ctx)->fire_mode == fire_mode_auto_e;
 }
+static bool TriggerFsmGuardUnjam(void *ctx, const void *event_data)
+{
+    (void)event_data;
+    return ((TriggerFsmCtx_s *)ctx)->fire_mode == fire_mode_unjam_e;
+}
 static bool TriggerFsmGuardFireOff(void *ctx, const void *event_data)
 {
     (void)event_data;
@@ -157,6 +163,7 @@ static const LibFsmTableTransition_s trigger_fsm_table[] = {
     {trigger_state_off_e, trigger_ev_fire_on_e, trigger_state_single_e, TriggerFsmGuardSingle, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
     {trigger_state_off_e, trigger_ev_fire_on_e, trigger_state_triple_e, TriggerFsmGuardTriple, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
     {trigger_state_off_e, trigger_ev_fire_on_e, trigger_state_auto_e, TriggerFsmGuardAuto, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
+    {trigger_state_off_e, trigger_ev_fire_on_e, trigger_state_unjam_e, TriggerFsmGuardUnjam, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
     /* 4. 本步走完 —— 就是"整段轨迹跑完"这**一个**事件（轨迹终点必落在整数发网格上）：
      *    单发 = 1 发一条轨迹、三发 = 3 发一条轨迹，finished 即"打完"；连发是 500 发的长轨迹，
      *    跑完在「连发」里原地续段（驱动层不喂 step_done），故这里没有连发规则。
@@ -168,6 +175,9 @@ static const LibFsmTableTransition_s trigger_fsm_table[] = {
     {trigger_state_single_e, trigger_ev_step_done_e, trigger_state_stop_e, NULL, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
     {trigger_state_triple_e, trigger_ev_step_done_e, trigger_state_off_e, TriggerFsmGuardFireOff, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
     {trigger_state_triple_e, trigger_ev_step_done_e, trigger_state_stop_e, NULL, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
+    /* 退弹同单发：走完一格就收尾（ch7 仍闭合则停在停止态，需松手再拨下一次） */
+    {trigger_state_unjam_e, trigger_ev_step_done_e, trigger_state_off_e, TriggerFsmGuardFireOff, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
+    {trigger_state_unjam_e, trigger_ev_step_done_e, trigger_state_stop_e, NULL, NULL, LIB_FSM_TABLE_TRANS_EXTERNAL},
     /* 5. ch7 下降沿 → 关。**单发/三发都没有这条**：一旦发射就要打满（1 发 / 3 发），中途松手
      *    不打断，打完由上面第 4 组规则看电平决定回关还是等断开。只有连发运动中可停 —— 松手
      *    立即回「关」，驱动层再走一条"到整数发边界"的收尾轨迹停下（见 AppShootRun）。 */
@@ -181,17 +191,17 @@ static const LibFsmTableStateActions_s trigger_fsm_actions[] = {
     [trigger_state_single_e] = {TriggerFsmEnterSingle, NULL}, // 单发
     [trigger_state_triple_e] = {TriggerFsmEnterTriple, NULL}, // 三发
     [trigger_state_auto_e] = {TriggerFsmEnterAuto, NULL},     // 连发
+    [trigger_state_unjam_e] = {TriggerFsmEnterState, NULL},   // 退弹：单步（continuous=0）
     [trigger_state_stop_e] = {TriggerFsmEnterState, NULL},    // 停止
 };
 LIB_FSM_TABLE_CHECK_ACTIONS(trigger_fsm_actions, (uint32_t)trigger_state_count_e);
 
 /*---------------- 每拍推进 ----------------*/
-/* 是否处于"开火中"：只有 单发/三连发/连发 三种。off（ch7 断开）和预留的 unjam 都不算。
- * ⚠ 不能用 fire_mode != off 判：ch9 停在"退弹"段时那一位非 off，会让 fire_last 提前变 1，
- *   之后拨回 单发/三连发/连发 时没有上升沿，状态机永远进不了发弹态。 */
+/* 是否处于"开火中"：单发/三连发/连发/退弹 四种都要驱动机构；off（ch7 断开）不算。
+ * ⚠ 退弹必须算进来：否则 ch9 停在退弹段时 fire_last 不会随 ch7 变 1，状态机收不到上升沿。 */
 static inline uint8_t TriggerFsmFireActive(fire_mode_e mode)
 {
-    return (uint8_t)((mode == fire_mode_single_e) || (mode == fire_mode_triple_e) || (mode == fire_mode_auto_e));
+    return (uint8_t)((mode == fire_mode_single_e) || (mode == fire_mode_triple_e) || (mode == fire_mode_auto_e) || (mode == fire_mode_unjam_e));
 }
 
 /* 事件来源：ch7 电平（cmd 把 ch7 与 ch9 一起编码进 fire_mode）→ 上升/下降沿；
@@ -221,12 +231,12 @@ static void TriggerFsmNotifyStepDone(void)
     LibFsmTableDispatch(&trigger_fsm, trigger_ev_step_done_e, NULL);
 }
 
-/* 当前是否"发弹中"（拨盘该跑规划轨迹）：单发/三发/连发都跑；关/停止不跑。
+/* 当前是否"在动机构"（拨盘该跑规划轨迹）：单发/三发/连发/退弹都跑；关/停止不跑。
  * 停止态是"这一发已走完、等 ch7 断开"，必须停。 */
 static uint8_t TriggerFsmIsFiring(void)
 {
     LibFsmTableState_t s = LibFsmTableCurrent(&trigger_fsm);
-    return (uint8_t)((s == trigger_state_single_e) || (s == trigger_state_triple_e) || (s == trigger_state_auto_e));
+    return (uint8_t)((s == trigger_state_single_e) || (s == trigger_state_triple_e) || (s == trigger_state_auto_e) || (s == trigger_state_unjam_e));
 }
 
 void AppShootInit(void)
@@ -502,9 +512,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      * 取 drv **原始**转速（未低通、未乘 feedback_direction）：判的是"轮子实际还在不在转"，
      * 与极性无关，也比控制核内部 5 ms 低通更快。未收到过反馈时 speed 为 0 → 报 low
      * （此时从未使能过，轮子不会转）；反馈掉线会保留最后值，仍偏高时保守不放行。 */
-    shoot_shoot2cmd_data.friction_speed_low = (fabsf(fm.speed) < FRICTION_SPEED_HOLE_THRESHOLD)
-                                              ? shoot_friction_speed_low_e
-                                              : shoot_friction_speed_high_e;
+    shoot_shoot2cmd_data.friction_speed_low = (fabsf(fm.speed) < FRICTION_SPEED_HOLE_THRESHOLD) ? shoot_friction_speed_low_e : shoot_friction_speed_high_e;
 
     // ---- 拨盘：拨弹状态机 + jerk 受限轨迹位置环 ----
     /* 机械方向（2026-10-10 看实机定）：拨盘"正转"是另一个物理旋向 —— 同样由控制核 Config 的
@@ -558,7 +566,8 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
              * 起点速度取**实测**：连发收尾后紧接着再来一发时机构还在动，不能让轨迹从 v=0 起步。 */
             float p0 = (float)trigger_motor_ctrl.data.position;
             float v0 = trigger_motor_ctrl.data.speed;
-            int32_t shots = 1;
+            /* 退弹 = 方向相反的"单发"：目标格号 -1（往回一整格），其余轨迹/收尾逻辑完全复用。 */
+            int32_t shots = (trigger_state_unjam_e == LibFsmTableCurrent(&trigger_fsm)) ? -1 : 1;
             float vmax = TRIGGER_TRAJ_VMAX;
             if (trigger_fsm_ctx.continuous)
             {
@@ -893,11 +902,11 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(18, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].error);
     VofaSetChannel(19, trigger_friction_ff);
     /* CH20~CH25：摩擦轮（判弹丸过轮，见上面通道表）。空闲拍仍照发，便于看停机后的残值 */
-    VofaSetChannel(20, -fm.speed);                                                      // 实测转速 (rad/s, app 正向, 未低通)
-    VofaSetChannel(21, -fm.current);                                                    // 实测电流 (A, app 正向, 未低通)
-    VofaSetChannel(22, friction_out);                                                   // 速度环输出 = 实下发 (A)
-    VofaSetChannel(23, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out);        // 速度环 I 项 (A)
-    VofaSetChannel(24, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].error);        // 速度误差 (rad/s)
+    VofaSetChannel(20, -fm.speed);                                               // 实测转速 (rad/s, app 正向, 未低通)
+    VofaSetChannel(21, -fm.current);                                             // 实测电流 (A, app 正向, 未低通)
+    VofaSetChannel(22, friction_out);                                            // 速度环输出 = 实下发 (A)
+    VofaSetChannel(23, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out); // 速度环 I 项 (A)
+    VofaSetChannel(24, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].error); // 速度误差 (rad/s)
     VofaSetChannel(25, (float)((shoot_friction_disable_e != shoot_cmd2shoot_data.friction_mode) && (fm.timestamp_us != 0))); // 使能(含减速)且在线
     VofaSend();
 #endif // SHOOT_VOFA_ENABLE

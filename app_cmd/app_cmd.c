@@ -42,7 +42,14 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 #define FIRE_MODE_SEG_1 (-0.75f) // 关闭摩擦轮 | 单发
 #define FIRE_MODE_SEG_2 (-0.25f) // 单发 | 三连发
 #define FIRE_MODE_SEG_3 (0.25f)  // 三连发 | 连发
-#define FIRE_MODE_SEG_4 (0.75f)  // 连发 | 退弹（预留）
+#define FIRE_MODE_SEG_4 (0.75f)  // 连发 | 退弹
+
+/* 底盘驱动档在 ch8 上的四段分界：标准四档开关停位约 -1 / -1/3 / +1/3 / +1，
+ * 依次为 普通+额外功率 / 普通 / 自由 / 底盘失能。分界取相邻停位中点 0 / ±2/3。
+ * 若实车开关停位不同（例如 -1/-0.5/+0.5/+1），按实测通道值改这三个阈值即可。 */
+#define CHASSIS_DRIVE_SEG_1 (-2.0f / 3.0f) // 普通+额外功率 | 普通
+#define CHASSIS_DRIVE_SEG_2 (0.0f)         // 普通 | 自由
+#define CHASSIS_DRIVE_SEG_3 (2.0f / 3.0f)  // 自由 | 底盘失能
 
 /* 分级调试开关（位掩码，宏定义见 app.h）：某一位为 1 表示该子系统参与控制。
  * 未置位的子系统在这里下发"零输出"：
@@ -59,16 +66,16 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 
 /* SBUS 通道分配（0 基；摇杆 -1~1，三档开关 -1/0/+1，旋钮 -1~1）
  * 注：README「操作逻辑」一节写的拨杆号与代码不一致，这里以实机在用的映射为准。 */
-#define SBUS_CH_VY 0          // 右摇杆左右 → 底盘 vy
-#define SBUS_CH_VX 1          // 右摇杆前后 → 底盘 vx
-#define SBUS_CH_PITCH 2       // 左摇杆上下 → 云台 pitch
-#define SBUS_CH_YAW 3         // 左摇杆左右 → 云台 yaw
-#define SBUS_CH_ENABLE 4      // 总开关：上 = 使能
-#define SBUS_CH_POWER_BOOST 5 // 额外功率开关（两段）：上 = 底盘功率上限加一段额外功率
-#define SBUS_CH_MODE 6        // 档位开关（三档）：hole / normal / gyro
-#define SBUS_CH_FIRE 7        // 开火总闸（两段开关）：0 = 关，1 = 由下面这个旋钮选模式
-#define SBUS_CH_VISION 8      // 视觉控制开关（两段）：上 = 允许视觉接管云台（仍需视觉报有目标）
-#define SBUS_CH_FIRE_MODE 9   // 发射模式五档开关：关闭摩擦轮 / 单发 / 三连发 / 连发 / 退弹（预留）（非回中，无死区）
+#define SBUS_CH_VY 0            // 右摇杆左右 → 底盘 vy
+#define SBUS_CH_VX 1            // 右摇杆前后 → 底盘 vx
+#define SBUS_CH_PITCH 2         // 左摇杆上下 → 云台 pitch
+#define SBUS_CH_YAW 3           // 左摇杆左右 → 云台 yaw
+#define SBUS_CH_ENABLE 4        // 总开关：上 = 使能
+#define SBUS_CH_VISION 5        // 视觉接管允许（两段）：上 = 允许视觉接管云台（仍需视觉报有目标）
+#define SBUS_CH_MODE 6          // 档位开关（三档）：hole / normal / gyro
+#define SBUS_CH_FIRE 7          // 开火总闸（两段开关）：0 = 关，1 = 由下面这个旋钮选模式
+#define SBUS_CH_CHASSIS_DRIVE 8 // 底盘驱动档（四段开关）：普通+额外功率 / 普通 / 自由 / 底盘失能
+#define SBUS_CH_FIRE_MODE 9     // 发射模式五档开关：关闭摩擦轮 / 单发 / 三连发 / 连发 / 退弹（非回中，无死区）
 
 /* 视觉直通路的限幅（cmd 不过规划器，直接把视觉给的 位置/速度/加速度 下发给云台）。
  * 数值与摇杆规划器是同一套整定值（robot_def.h 的 pitch_speed 等），但用独立宏名：
@@ -81,7 +88,7 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 #define VISION_YAW_SPEED_LIMIT (yaw_speed)
 #define VISION_YAW_ACC_LIMIT (yaw_acceleration)
 
-/* 原 ch8 速度旋钮已改作视觉开关：底盘平动与小陀螺速度固定取旋钮中位，
+/* 原 ch8 速度旋钮已改作底盘驱动档：底盘平动与小陀螺速度固定取旋钮中位，
  * 即归一化通道值 0（knob_scale(0) = 速度区间中点），不再随遥控变化。 */
 #define SBUS_SPEED_CHANNEL_FIXED 0.0f
 
@@ -98,6 +105,15 @@ typedef enum : uint8_t
     visual_control_e = 4,
 } cmd_control_type; // 控制类型
 
+/* 底盘驱动档（ch8 四段开关）：只影响下发给底盘的 enabled/vx/vy/w/yaw。 */
+typedef enum : uint8_t
+{
+    chassis_drive_boost_e = 0,   // 第 1 段：普通行驶 + 额外功率
+    chassis_drive_normal_e = 1,  // 第 2 段：普通行驶（跟随云台）
+    chassis_drive_free_e = 2,    // 第 3 段：自由模式（不跟随云台，vx/vy 按车身系直通）
+    chassis_drive_disable_e = 3, // 第 4 段：底盘失能（云台不受影响）
+} chassis_drive_mode_e;
+
 /* AppCmdRun 的帧内上下文：{sbus遥控，图传，键鼠，视觉} 统一接口控制 {云台，底盘，发射，视觉}。
  *
  * 输入源（sbus / 图传 / 键鼠）只负责把自身输入翻译成这里的 归一化通道(-1~1)，
@@ -107,22 +123,23 @@ typedef struct
 {
     cmd_control_type type; // 本帧生效的控制源
 
-    robot_mode mode;            // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
-    uint8_t fire;               // 开火总闸（ch7）：0 = 关
-    uint8_t power_boost_enable; // 额外功率开关（ch5）：0 = 关；随控制帧转发给底盘
+    robot_mode mode;                    // 状态机：stop = 失能，normal/gyro/hole 由档位开关解出
+    uint8_t fire;                       // 开火总闸（ch7）：0 = 关
+    chassis_drive_mode_e chassis_drive; // 底盘驱动档（ch8 四段）
+    uint8_t power_boost_enable;         // 额外功率（ch8 第 1 段）：0 = 关；随控制帧转发给底盘
     /* ch9 五档选择器停在"关闭摩擦轮"段（与 ch7 无关，始终生效）。
      * fire_mode 编码不了这一档：它表达的是"关火"，而关闭摩擦轮是另一件事
      * （ch7 断开时轮子本来也允许转，见 send_shoot）。 */
     uint8_t friction_off;
-    fire_mode_e fire_mode;      // 发射模式：fire=0 → 关；fire=1 → ch9 五段解出 单发/三连发/连发/退弹
-    float fire_rate;            // 射频 (发/s)：视觉源由 enable_pitch_diff 换算；遥控源暂无来源
+    fire_mode_e fire_mode; // 发射模式：fire=0 → 关；fire=1 → ch9 五段解出 单发/三连发/连发/退弹
+    float fire_rate;       // 射频 (发/s)：视觉源由 enable_pitch_diff 换算；遥控源暂无来源
 
     // 归一化通道 (-1~1)：摇杆/开关中位 0
     float gimbal_pitch_channel;  // 云台 pitch
     float gimbal_yaw_channel;    // 云台 yaw
     float chassis_vx_channel;    // 底盘前后
     float chassis_vy_channel;    // 底盘左右
-    float chassis_speed_channel; // 速度档位：现固定为 0（原 ch8 旋钮已改作视觉开关），
+    float chassis_speed_channel; // 速度档位：现固定为 0（原 ch8 旋钮已改作底盘驱动档），
                                  // 0 = 区间中点，同时缩放平动最大速度与 gyro 档自转角速度
 } AppCmdRun_ctx_struct;
 
@@ -236,6 +253,7 @@ static void input_update(void)
     cmd_ctx.type = no_control_e;
     cmd_ctx.mode = robot_mode_stop;
     cmd_ctx.fire = 0;
+    cmd_ctx.chassis_drive = chassis_drive_normal_e;
     cmd_ctx.power_boost_enable = 0;
     cmd_ctx.friction_off = 0;
     cmd_ctx.fire_mode = fire_mode_off_e;
@@ -265,11 +283,21 @@ static void input_update(void)
     else
         cmd_ctx.mode = robot_mode_normal; // 中档
 
-    /* 额外功率开关（ch5，两段）：上 = 底盘在基础功率上限上再加一段额外功率。
-     * 总开关关闭/遥控掉线时上面已默认 0。 */
-    cmd_ctx.power_boost_enable = (sbus_inst.sbus_data.ch[SBUS_CH_POWER_BOOST] > sbus_half) ? 1u : 0u;
+    /* 底盘驱动档（ch8，四段）：-1 端 → +1 端依次为
+     *   普通+额外功率 / 普通 / 自由模式 / 底盘失能。
+     * 额外功率只是第 1 段的附加属性，转发给底盘；总开关关闭/遥控掉线时默认普通档。 */
+    float cd = sbus_inst.sbus_data.ch[SBUS_CH_CHASSIS_DRIVE];
+    if (cd < CHASSIS_DRIVE_SEG_1)
+        cmd_ctx.chassis_drive = chassis_drive_boost_e;
+    else if (cd < CHASSIS_DRIVE_SEG_2)
+        cmd_ctx.chassis_drive = chassis_drive_normal_e;
+    else if (cd < CHASSIS_DRIVE_SEG_3)
+        cmd_ctx.chassis_drive = chassis_drive_free_e;
+    else
+        cmd_ctx.chassis_drive = chassis_drive_disable_e;
+    cmd_ctx.power_boost_enable = (chassis_drive_boost_e == cmd_ctx.chassis_drive) ? 1u : 0u;
 
-    /* 发射：ch9 是五档选择器（-1 端 → +1 端）：关闭摩擦轮 / 单发 / 三连发 / 连发 / 退弹（预留）；
+    /* 发射：ch9 是五档选择器（-1 端 → +1 端）：关闭摩擦轮 / 单发 / 三连发 / 连发 / 退弹；
      * ch7 是开火总闸（两段开关），只有 ch7 = 1 时选择的 单发/三连发/连发/退弹 才真正下发。
      * "关闭摩擦轮"段不受 ch7 影响、始终生效 —— 它是摩擦轮的总关，与是否发弹无关，
      * 具体在 send_shoot 里优先于直立/过洞判断。 */
@@ -288,12 +316,12 @@ static void input_update(void)
     else if (fm < FIRE_MODE_SEG_4)
         fire_sel = fire_mode_auto_e;
     else
-        fire_sel = fire_mode_unjam_e; // 退弹：shoot 侧预留，暂按不开火处理
+        fire_sel = fire_mode_unjam_e; // 退弹：shoot 侧复用规划器反向走一整格
 
     cmd_ctx.fire = (sbus_inst.sbus_data.ch[SBUS_CH_FIRE] > sbus_half) ? 1 : 0;
     cmd_ctx.fire_mode = (cmd_ctx.fire != 0) ? fire_sel : fire_mode_off_e;
 
-    // 云台控制权：视觉开关（ch8）打开且视觉有目标 → 交给视觉，否则由摇杆控制
+    // 云台控制权：视觉允许开关（ch5）打开且视觉有目标 → 交给视觉，否则由摇杆控制
     if ((sbus_inst.sbus_data.ch[SBUS_CH_VISION] > sbus_half) && (vision_appear_e == vision_recv_data.appear))
         cmd_ctx.type = visual_control_e;
     else
@@ -485,17 +513,12 @@ static void send_gimbal(void)
         /* 限幅：视觉是外环直通，异常/突变值会直接变成大误差和大前馈；这里夹到与规划器
          * 相同的物理约束内（数值同源，宏独立命名，见文件头 VISION_*_LIMIT）。
          * yaw 位置不限幅 —— 它是无限旋转轴，±π 环绕由 yaw 轴误差归一化处理。 */
-        cmd_cmd2gimbal_data.pitch_x = Lib_Math_Clamp(-DEG_TO_RAD(vision_recv_data.pitch_base_relative),
-                                                     VISION_PITCH_POS_LIMIT_MIN, VISION_PITCH_POS_LIMIT_MAX);
-        cmd_cmd2gimbal_data.pitch_v = Lib_Math_Clamp(-vision_recv_data.v_pitch_base_relative,
-                                                     -VISION_PITCH_SPEED_LIMIT, VISION_PITCH_SPEED_LIMIT);
-        cmd_cmd2gimbal_data.pitch_a = Lib_Math_Clamp(-vision_recv_data.a_pitch_base_relative,
-                                                     -VISION_PITCH_ACC_LIMIT, VISION_PITCH_ACC_LIMIT);
+        cmd_cmd2gimbal_data.pitch_x = Lib_Math_Clamp(-DEG_TO_RAD(vision_recv_data.pitch_base_relative), VISION_PITCH_POS_LIMIT_MIN, VISION_PITCH_POS_LIMIT_MAX);
+        cmd_cmd2gimbal_data.pitch_v = Lib_Math_Clamp(-vision_recv_data.v_pitch_base_relative, -VISION_PITCH_SPEED_LIMIT, VISION_PITCH_SPEED_LIMIT);
+        cmd_cmd2gimbal_data.pitch_a = Lib_Math_Clamp(-vision_recv_data.a_pitch_base_relative, -VISION_PITCH_ACC_LIMIT, VISION_PITCH_ACC_LIMIT);
         cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
-        cmd_cmd2gimbal_data.yaw_v = Lib_Math_Clamp(vision_recv_data.v_yaw,
-                                                   -VISION_YAW_SPEED_LIMIT, VISION_YAW_SPEED_LIMIT);
-        cmd_cmd2gimbal_data.yaw_a = Lib_Math_Clamp(vision_recv_data.a_yaw,
-                                                   -VISION_YAW_ACC_LIMIT, VISION_YAW_ACC_LIMIT);
+        cmd_cmd2gimbal_data.yaw_v = Lib_Math_Clamp(vision_recv_data.v_yaw, -VISION_YAW_SPEED_LIMIT, VISION_YAW_SPEED_LIMIT);
+        cmd_cmd2gimbal_data.yaw_a = Lib_Math_Clamp(vision_recv_data.a_yaw, -VISION_YAW_ACC_LIMIT, VISION_YAW_ACC_LIMIT);
         // 底盘跟随前馈：视觉转云台时底盘也要同步跟上，前馈取**限幅后**的角速度，与云台一致
         cmd_gimbal_yaw_rate_cmd = cmd_cmd2gimbal_data.yaw_v;
     }
@@ -584,7 +607,7 @@ static void send_chassis(float dt_s)
     chassis_yaw_target = 0.0f;
     chassis_yaw_target_mode = robot_mode_stop;
 #else
-    /* 平动最大速度：速度旋钮（ch8）已改作视觉开关，这里固定取中位值 0，
+    /* 平动最大速度：速度旋钮（ch8）已改作底盘驱动档，这里固定取中位值 0，
      * 即 knob_scale(0) = chassis_translate_speed_min 与 ..._speed 的区间中点。
      * 摇杆只决定方向与在该上限内的比例，满舵 = 该固定档位的最大速度。
      * gyro 档的自转角速度用同一个固定值缩放（见 chassis_w_from_mode）。 */
@@ -593,60 +616,90 @@ static void send_chassis(float dt_s)
     float vx_stick = channel_deadzone(cmd_ctx.chassis_vx_channel) * translate_speed;
     float vy_stick = -channel_deadzone(cmd_ctx.chassis_vy_channel) * translate_speed;
 
-    gimbal2chassis_data.enabled = cmd_ctx.mode; // robot_mode_stop = 失能
-    /* 额外功率开关（ch5）随控制帧转发；底盘侧用它决定功率上限是否加成 */
+    /* 额外功率（ch8 第 1 段）随控制帧转发；底盘侧用它决定功率上限是否加成 */
     gimbal2chassis_data.power_boost_enable = cmd_ctx.power_boost_enable;
 
+    if ((robot_mode_stop == cmd_ctx.mode) || (chassis_drive_disable_e == cmd_ctx.chassis_drive))
+    {
+        /* 总开关关闭 / ch8 第 4 段：底盘失能（只影响底盘，云台照常工作）。
+         * 指令全给 0；目标角积分器回零，重新使能后 gyro 会重新用实测角播种。 */
+        gimbal2chassis_data.enabled = robot_mode_stop;
+        gimbal2chassis_data.vx = 0.0f;
+        gimbal2chassis_data.vy = 0.0f;
+        gimbal2chassis_data.w = 0.0f;
+        gimbal2chassis_data.yaw = 0.0f;
+        chassis_yaw_target = 0.0f;
+        chassis_yaw_target_mode = robot_mode_stop;
+    }
+    else if (chassis_drive_free_e == cmd_ctx.chassis_drive)
+    {
+        /* ch8 第 3 段：自由模式 —— 底盘照常 RUN，但不跟随云台、不转车身：
+         *   底盘侧收到 robot_mode_free，跟随环直接输出 0（见 ChassisWCommand）；
+         *   vx/vy 按**车身系**直通（不按云台夹角旋转），推前 = 车头方向。 */
+        gimbal2chassis_data.enabled = robot_mode_free;
+        gimbal2chassis_data.vx = vx_stick;
+        gimbal2chassis_data.vy = vy_stick;
+        gimbal2chassis_data.w = 0.0f;
+        gimbal2chassis_data.yaw = 0.0f; // free 档底盘不读目标角
+        /* 目标角积分器回零：切回 normal/gyro 时不带自由模式的旧值 */
+        chassis_yaw_target = 0.0f;
+        chassis_yaw_target_mode = robot_mode_stop;
+    }
+    else
+    {
+        gimbal2chassis_data.enabled = cmd_ctx.mode; // robot_mode_stop 已在上面处理
+
 #if CMD_DEBUG_STAGE_CHASSIS_DIRECT
-    /* 云台未使能：摇杆向量不按云台夹角旋转，直接按车身系发下去 ——
-     * 推前就是车头方向，底盘不再追云台。
-     * w 改由**云台 yaw 那个摇杆通道**直接控制（这个模式下它空着，正好拿来转车身）：
-     *   摇杆 -1~1 → 自转角速度，大小仍按 gyro 档那套固定中位值缩放；
-     *   取负与云台 yaw 的约定保持一致：正摇杆 = 云台顺时针，底盘也该顺时针，
-     *   而 w>0 是逆时针 ⇒ 这里必须取负（与 normal 档 ff=+1 的结果同向）；
-     *   死区照吃，摇杆回中 = 不转。
-     * 这个模式没有云台跟随：档位报成 gyro，让底盘直接执行 w；目标偏角填当前
-     * 实测角，跟随误差恒为 0，不会额外叠加 PID 输出（stop 仍报 stop）。 */
-    gimbal2chassis_data.enabled = (robot_mode_stop == cmd_ctx.mode) ? robot_mode_stop : robot_mode_gyro;
-    gimbal2chassis_data.vx = vx_stick;
-    gimbal2chassis_data.vy = vy_stick;
-    gimbal2chassis_data.w =
-        -channel_deadzone(cmd_ctx.gimbal_yaw_channel) * knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
-    /* 目标角 = 实测角：底盘侧 e = wrap(θ_实测 − θ_ref) ≈ 0。
-     * 云台失能时编码器仍在回传 yaw_motor_position，故这里取当前值即可。 */
-    gimbal2chassis_data.yaw = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
-    chassis_yaw_target = 0.0f;
-    chassis_yaw_target_mode = robot_mode_stop;
+        /* 云台未使能：摇杆向量不按云台夹角旋转，直接按车身系发下去 ——
+         * 推前就是车头方向，底盘不再追云台。
+         * w 改由**云台 yaw 那个摇杆通道**直接控制（这个模式下它空着，正好拿来转车身）：
+         *   摇杆 -1~1 → 自转角速度，大小仍按 gyro 档那套固定中位值缩放；
+         *   取负与云台 yaw 的约定保持一致：正摇杆 = 云台顺时针，底盘也该顺时针，
+         *   而 w>0 是逆时针 ⇒ 这里必须取负（与 normal 档 ff=+1 的结果同向）；
+         *   死区照吃，摇杆回中 = 不转。
+         * 这个模式没有云台跟随：档位报成 gyro，让底盘直接执行 w；目标偏角填当前
+         * 实测角，跟随误差恒为 0，不会额外叠加 PID 输出（stop 仍报 stop）。 */
+        gimbal2chassis_data.enabled = (robot_mode_stop == cmd_ctx.mode) ? robot_mode_stop : robot_mode_gyro;
+        gimbal2chassis_data.vx = vx_stick;
+        gimbal2chassis_data.vy = vy_stick;
+        gimbal2chassis_data.w =
+            -channel_deadzone(cmd_ctx.gimbal_yaw_channel) * knob_scale(cmd_ctx.chassis_speed_channel, chassis_gyro_rotate_speed_min, chassis_gyro_rotate_speed);
+        /* 目标角 = 实测角：底盘侧 e = wrap(θ_实测 − θ_ref) ≈ 0。
+         * 云台失能时编码器仍在回传 yaw_motor_position，故这里取当前值即可。 */
+        gimbal2chassis_data.yaw = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
+        chassis_yaw_target = 0.0f;
+        chassis_yaw_target_mode = robot_mode_stop;
 #else
-    /* 云台指向相对底盘前进方向的真实夹角 θ (rad)，逆时针为正。
-     * 取 yaw 电机编码器关节角（云台相对底盘）再减掉机械零位偏置：装配后编码器零位
-     * 与"云台指向 = 底盘前进方向"对不齐，差的就是 chassis_gimbal_offset
-     * （底盘前进方向本身已由底盘侧的舵轮零位标定好，云台这边只补这一个角）。
-     * 摇杆向量的旋转和底盘跟随都必须用这个 θ：一个决定往哪走，一个决定车身转到哪，
-     * 两者不同源就会差一个偏置角（车身停在编码器零位，向量却按真实朝向旋转）。
-     * 用的是 yaw_motor_position（编码器关节角）而不是 yaw_position —— 后者是 IMU 的
-     * 世界系航向，底盘一转就变，拿它做跟随会持续自转。
-     *
-     * θ 只在本板用于摇杆向量旋转。底盘不接收实测角：它从共享 CAN1 直接读同一颗
-     * RS05，自己扣同样的 chassis_gimbal_offset，拿到最新鲜的实测 θ。
-     * 本帧的 yaw 字段发的是**目标偏角** θ_ref（normal/hole = 0），
-     * 底盘用 wrap(θ_实测 − θ_ref) 作为 PID 输入。
-     * 云台只保留需要本板指令角速度的前馈项（见 chassis_w_from_mode）。 */
-    float theta = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
-    /* 摇杆向量专用角：把 θ 外推到「底盘真正执行本拍车体系速度」的时刻。
-     * gyro 档云台锁世界系航向、底盘以实测 w 逆时针自转 ⇒ dθ/dt = -w。
-     * chassis2gimbal_data.w 是底盘 IMU 实测角速度（app_cmd.c:108 已在接收）。 */
-    float theta_vec = Lib_Math_WrapAngleNegPIToPI(theta - chassis_vec_theta_delay_s * chassis2gimbal_data.w);
-    float c = Lib_Math_Cos(theta_vec);
-    float s = Lib_Math_Sin(theta_vec);
-    gimbal2chassis_data.vx = c * vx_stick - s * vy_stick;
-    gimbal2chassis_data.vy = s * vx_stick + c * vy_stick;
-    // 目标偏角：normal/hole = 0，gyro 按自转速度斜坡（向量旋转仍用上面的 theta）
-    gimbal2chassis_data.yaw = chassis_yaw_target_from_mode(dt_s);
-    // w 只发前馈/自转部分，PID 由底盘用实测 θ 与 yaw 目标自行计算
-    // （前馈同拍由 send_gimbal 写入 cmd_gimbal_yaw_rate_cmd）
-    gimbal2chassis_data.w = chassis_w_from_mode(cmd_gimbal_yaw_rate_cmd);
+        /* 云台指向相对底盘前进方向的真实夹角 θ (rad)，逆时针为正。
+         * 取 yaw 电机编码器关节角（云台相对底盘）再减掉机械零位偏置：装配后编码器零位
+         * 与"云台指向 = 底盘前进方向"对不齐，差的就是 chassis_gimbal_offset
+         * （底盘前进方向本身已由底盘侧的舵轮零位标定好，云台这边只补这一个角）。
+         * 摇杆向量的旋转和底盘跟随都必须用这个 θ：一个决定往哪走，一个决定车身转到哪，
+         * 两者不同源就会差一个偏置角（车身停在编码器零位，向量却按真实朝向旋转）。
+         * 用的是 yaw_motor_position（编码器关节角）而不是 yaw_position —— 后者是 IMU 的
+         * 世界系航向，底盘一转就变，拿它做跟随会持续自转。
+         *
+         * θ 只在本板用于摇杆向量旋转。底盘不接收实测角：它从共享 CAN1 直接读同一颗
+         * RS05，自己扣同样的 chassis_gimbal_offset，拿到最新鲜的实测 θ。
+         * 本帧的 yaw 字段发的是**目标偏角** θ_ref（normal/hole = 0），
+         * 底盘用 wrap(θ_实测 − θ_ref) 作为 PID 输入。
+         * 云台只保留需要本板指令角速度的前馈项（见 chassis_w_from_mode）。 */
+        float theta = Lib_Math_WrapAngleNegPIToPI(cmd_gimbal2cmd_data.yaw_motor_position - chassis_gimbal_offset);
+        /* 摇杆向量专用角：把 θ 外推到「底盘真正执行本拍车体系速度」的时刻。
+         * gyro 档云台锁世界系航向、底盘以实测 w 逆时针自转 ⇒ dθ/dt = -w。
+         * chassis2gimbal_data.w 是底盘 IMU 实测角速度（app_cmd.c:108 已在接收）。 */
+        float theta_vec = Lib_Math_WrapAngleNegPIToPI(theta - chassis_vec_theta_delay_s * chassis2gimbal_data.w);
+        float c = Lib_Math_Cos(theta_vec);
+        float s = Lib_Math_Sin(theta_vec);
+        gimbal2chassis_data.vx = c * vx_stick - s * vy_stick;
+        gimbal2chassis_data.vy = s * vx_stick + c * vy_stick;
+        // 目标偏角：normal/hole = 0，gyro 按自转速度斜坡（向量旋转仍用上面的 theta）
+        gimbal2chassis_data.yaw = chassis_yaw_target_from_mode(dt_s);
+        // w 只发前馈/自转部分，PID 由底盘用实测 θ 与 yaw 目标自行计算
+        // （前馈同拍由 send_gimbal 写入 cmd_gimbal_yaw_rate_cmd）
+        gimbal2chassis_data.w = chassis_w_from_mode(cmd_gimbal_yaw_rate_cmd);
 #endif // CMD_DEBUG_STAGE_CHASSIS_DIRECT
+    } // else：普通 / 额外功率 / 调试直通
 #endif // !CMD_DEBUG_ENABLED(CMD_DEBUG_STAGE_chassis)
 
     CommSend(&chassis_comm, (uint8_t *)&gimbal2chassis_data);

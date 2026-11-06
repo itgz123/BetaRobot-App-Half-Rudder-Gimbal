@@ -12,7 +12,7 @@ void function_in_main_c(void);
 #define CMD_DEBUG_STAGE_shoot 0b00000010
 #define CMD_DEBUG_STAGE_chassis 0b00000100
 #define CMD_DEBUG_STAGE_referee 0b00001000
-#define CMD_DEBUG_STAGE CMD_DEBUG_STAGE_gimbal | CMD_DEBUG_STAGE_shoot // | CMD_DEBUG_STAGE_chassis //
+#define CMD_DEBUG_STAGE CMD_DEBUG_STAGE_gimbal | CMD_DEBUG_STAGE_shoot | CMD_DEBUG_STAGE_chassis //
 
 /*============================================
  *              机器人状态机模式
@@ -24,6 +24,10 @@ typedef enum : uint8_t
     robot_mode_normal = 1,
     robot_mode_gyro = 2,
     robot_mode_hole = 3,
+    /* 自由驱动：只发给底盘（云台自己的状态机不认识这个值，cmd 绝不会把它写进
+     * cmd2gimbal_data）。底盘照常 RUN，但不做 θ 跟随、w=0，vx/vy 按车身系直通。
+     * 对端定义必须一致：app/half_rudder_chassis/app/app.h */
+    robot_mode_free = 4,
 } robot_mode; // 状态机 参考`app/half_rudder_gimbal/README.md`
 
 /*============================================

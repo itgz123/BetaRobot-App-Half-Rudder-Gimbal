@@ -14,14 +14,14 @@ extern QueueHandle_t shoot2cmd_queue_handle;
 /*============================================
  *              枚举
  *============================================*/
-/* 发射模式（遥控档位 → cmd → shoot）：关 / 单发 / 三连发 / 全自动 / 退弹（预留） */
+/* 发射模式（遥控档位 → cmd → shoot）：关 / 单发 / 三连发 / 全自动 / 退弹 */
 typedef enum : uint8_t
 {
     fire_mode_off_e = 0,    // 关（ch7 断开，或 ch9 停在"关闭摩擦轮"段）
     fire_mode_single_e = 1, // 单发
     fire_mode_triple_e = 2, // 三连发
     fire_mode_auto_e = 3,   // 全自动
-    fire_mode_unjam_e = 4,  // 退弹（预留：shoot 侧尚未实现，收到时按"不开火"处理）
+    fire_mode_unjam_e = 4,  // 退弹：反向走一整格（一次 ch7 上升沿执行一次）
 } fire_mode_e;
 
 /* 摩擦轮工作模式（cmd → shoot 的三段指令）。
@@ -52,7 +52,7 @@ typedef enum : uint8_t
  *   直立时才满速转；过洞档给"缓慢减速"；失能/立起中/倒下等给"失能"（0 电流，拨盘同步 0 电流）。
  *   ch7 电平不再单独下传：已全部编进 fire_mode —— off = ch7 断开（或 ch4 关/掉线），非 off
  *   = ch7 闭合（且 ch9 五段已解出 单发/三连发/全自动/退弹）。shoot 侧判"开火中"要显式认
- *   单发/三连发/连发三种模式，不能只用 fire_mode != off：预留的 unjam 也不是开火。
+ *   单发/三连发/连发/退弹四种模式，不能只用 fire_mode != off 以外的隐含写法。
  *   fire_rate 由视觉接管时的 enable_pitch_diff 换算（1/2/3 → 2/4/6 发/s），遥控源保持 0。
  *   尚未接线：两个裁判校准量（cmd 侧暂无来源）、shoot2cmd 的
  *   remaining_heat / bullets_fired（friction_speed 已接线，用于过洞放行）。
@@ -60,7 +60,7 @@ typedef enum : uint8_t
 typedef struct
 {
     shoot_friction_mode_e friction_mode; // 摩擦轮模式：失能(0A) / 满速 / 缓慢减速到 0
-    fire_mode_e fire_mode;               // 发射模式（ch7 闭合时由 ch9 三段解出；ch7 断开 = off）
+    fire_mode_e fire_mode;               // 发射模式（ch7 闭合时由 ch9 五段解出；ch7 断开 = off）
     float fire_rate;                     // 射频 (发/s)
 
     /* 裁判系统校准量：cmd 收到裁判消息后原样下传，shoot 侧拿去校正本地弹道/热量模型 */
