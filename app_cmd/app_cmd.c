@@ -12,6 +12,7 @@
 #include "drv_sbus.h"
 #include "drv_planner.h"
 #include "drv_comm.h"
+#include "drv_vofa.h"
 #include "comm_media_usb_simple.h"
 #include "comm_media_can_idseq.h"
 #include "comm_proto_ext.h"
@@ -83,6 +84,12 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
  * pitch 位置限位与规划器同坐标：0 = 上 pitch 水平（下 pitch 直立）。 */
 #define VISION_PITCH_POS_LIMIT_MIN (pitchup_position_1 - pitchup_position_2)
 #define VISION_PITCH_POS_LIMIT_MAX (pitchup_position_3 - pitchup_position_2)
+/* 内部 pitch 坐标（gimbal 回传的 pitch_position）在“下 pitch 直立、上 pitch 水平”时的
+ * 数值不是 0：pitch_position = (u - U0) - (d - Dmin)，代入标定姿态即为
+ * (U2 - U0) - (Dmax - Dmin) ≈ -0.0912 rad(-5.23°)。
+ * 视觉 pitch_base_relative 以“上 pitch 水平 = 0”为原点、向上为负，
+ * 故内部位置设定值 = -视觉角度 + 本偏置；回传时反过来先减掉本偏置再取反。 */
+#define VISION_PITCH_ZERO_OFFSET ((pitchup_position_2 - pitchup_position_0) - (pitchdown_position_max - pitchdown_position_min))
 #define VISION_PITCH_SPEED_LIMIT (pitch_speed)
 #define VISION_PITCH_ACC_LIMIT (pitch_acceleration)
 #define VISION_YAW_SPEED_LIMIT (yaw_speed)
@@ -472,6 +479,40 @@ static robot_mode gimbal_mode_effective(void)
 }
 
 /*======== 发送层 =========*/
+/* 视觉符号标定调试通道（直接写 VOFA，CH13~CH25；axis 占 CH1~CH12）：
+ *   CH13 视觉原始 pitch_base_relative (deg，视觉约定向上为负)
+ *   CH14 视觉原始 target_pitch_base_relative (deg)
+ *   CH15 视觉原始 v_pitch (rad/s)
+ *   CH16 视觉原始 a_pitch (rad/s²)
+ *   CH17 转换后 cmd→pitch_x (rad，内部向上为正)
+ *   CH18 转换后 cmd→pitch_v (rad/s)
+ *   CH19 转换后 cmd→pitch_a (rad/s²)
+ *   CH20 上 pitch 实测位置 (rad)
+ *   CH21 视觉原始 yaw (deg)
+ *   CH22 视觉原始 v_yaw (rad/s)
+ *   CH23 视觉原始 a_yaw (rad/s²)
+ *   CH24 视觉帧时间戳 (s，取 100s 模，判断帧是否更新/卡住)
+ *   CH25 视觉控制有效标志 (1=本拍来自视觉源，0=遥控/其他)
+ * 非视觉源时 CH13~CH16、CH21~CH24 置 0。
+ * 判符号：视觉帧是保持的，只取 CH24 变化（或 CH13/CH17 跳变）的采样点做跨帧差分；
+ * 内部位置对时间求导与 CH15 同号 → 当前“位置取反、v/a 不取反”正确，反号则 v/a 也要取反。 */
+static void send_visual_debug_vofa(uint8_t valid)
+{
+    VofaSetChannel(13, valid ? vision_recv_data.pitch_base_relative : 0.0f);
+    VofaSetChannel(14, valid ? vision_recv_data.target_pitch_base_relative : 0.0f);
+    VofaSetChannel(15, valid ? vision_recv_data.v_pitch_base_relative : 0.0f);
+    VofaSetChannel(16, valid ? vision_recv_data.a_pitch_base_relative : 0.0f);
+    VofaSetChannel(17, cmd_cmd2gimbal_data.pitch_x);
+    VofaSetChannel(18, cmd_cmd2gimbal_data.pitch_v);
+    VofaSetChannel(19, cmd_cmd2gimbal_data.pitch_a);
+    VofaSetChannel(20, cmd_gimbal2cmd_data.pitch_position);
+    VofaSetChannel(21, valid ? vision_recv_data.yaw : 0.0f);
+    VofaSetChannel(22, valid ? vision_recv_data.v_yaw : 0.0f);
+    VofaSetChannel(23, valid ? vision_recv_data.a_yaw : 0.0f);
+    VofaSetChannel(24, valid ? (float)(vision_recv_data.time_stamp % 100000u) * 0.001f : 0.0f);
+    VofaSetChannel(25, (float)valid);
+}
+
 // 给云台（队列）：统一上下文 → 位置/速度/加速度
 static void send_gimbal(void)
 {
@@ -491,6 +532,7 @@ static void send_gimbal(void)
      * 云台不动作，累加器也不必被推进。仍记一次控制源，恢复使能后首个交还拍不会误判边沿。 */
     cmd_cmd2gimbal_data.mode = robot_mode_stop;
     cmd_last_control_type = cmd_ctx.type;
+    send_visual_debug_vofa(0);
     xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data);
     return;
 #endif
@@ -508,14 +550,21 @@ static void send_gimbal(void)
         // 视觉源：直接给 位置/速度/加速度，不过规划器
         // 单位约定：视觉 pitch/yaw 为 deg（转 rad）；v/a 为 rad/s、rad/s²（不转）
         // 坐标系：pitch 为 base-relative（与 app_gimbal 一致）；yaw 为世界系（需标定对齐电机系）
-        /* 符号：视觉线协议的 pitch **负方向朝上**，本板内部 pitch 正方向朝上 → 三者一起取反
-         * （同一坐标轴镜像）。只反位置不反速度/加速度会让前馈与位置环互相打架。 */
-        /* 限幅：视觉是外环直通，异常/突变值会直接变成大误差和大前馈；这里夹到与规划器
-         * 相同的物理约束内（数值同源，宏独立命名，见文件头 VISION_*_LIMIT）。
+        /* 符号：视觉线协议的 pitch **位置** 负方向朝上，本板内部 pitch 正方向朝上 → 位置取反。
+         * 速度/加速度 **不取反**：实测视觉发送的 v/a 与位置字段不是同一镜像 —— 用
+         * ∫ref_vel·dt 对 (ref - 零位) 做回归，斜率应为 +1 才与位置导数同相，而 v/a 原样
+         * 传入时才是同相（取反后反而与位置环反相，前馈拖后腿，小幅视觉目标几乎跟不动）。
+         * 零位：视觉以“上 pitch 水平”为 0，而内部 pitch_position 在同一姿态下是
+         * VISION_PITCH_ZERO_OFFSET（非 0），故位置还要加回该偏置；速度/加速度是导数，
+         * 不含零位。 */
+        /* 限幅：视觉是外环直通，异常/突变值会直接变成大误差和大前馈；这里先把视觉角夹到与
+         * 规划器相同的物理约束内（数值同源，宏独立命名，见文件头 VISION_*_LIMIT），再加零位偏置。
          * yaw 位置不限幅 —— 它是无限旋转轴，±π 环绕由 yaw 轴误差归一化处理。 */
-        cmd_cmd2gimbal_data.pitch_x = Lib_Math_Clamp(-DEG_TO_RAD(vision_recv_data.pitch_base_relative), VISION_PITCH_POS_LIMIT_MIN, VISION_PITCH_POS_LIMIT_MAX);
-        cmd_cmd2gimbal_data.pitch_v = Lib_Math_Clamp(-vision_recv_data.v_pitch_base_relative, -VISION_PITCH_SPEED_LIMIT, VISION_PITCH_SPEED_LIMIT);
-        cmd_cmd2gimbal_data.pitch_a = Lib_Math_Clamp(-vision_recv_data.a_pitch_base_relative, -VISION_PITCH_ACC_LIMIT, VISION_PITCH_ACC_LIMIT);
+        cmd_cmd2gimbal_data.pitch_x =
+            Lib_Math_Clamp(-DEG_TO_RAD(vision_recv_data.pitch_base_relative), VISION_PITCH_POS_LIMIT_MIN, VISION_PITCH_POS_LIMIT_MAX) +
+            VISION_PITCH_ZERO_OFFSET;
+        cmd_cmd2gimbal_data.pitch_v = Lib_Math_Clamp(vision_recv_data.v_pitch_base_relative, -VISION_PITCH_SPEED_LIMIT, VISION_PITCH_SPEED_LIMIT);
+        cmd_cmd2gimbal_data.pitch_a = Lib_Math_Clamp(vision_recv_data.a_pitch_base_relative, -VISION_PITCH_ACC_LIMIT, VISION_PITCH_ACC_LIMIT);
         cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
         cmd_cmd2gimbal_data.yaw_v = Lib_Math_Clamp(vision_recv_data.v_yaw, -VISION_YAW_SPEED_LIMIT, VISION_YAW_SPEED_LIMIT);
         cmd_cmd2gimbal_data.yaw_a = Lib_Math_Clamp(vision_recv_data.a_yaw, -VISION_YAW_ACC_LIMIT, VISION_YAW_ACC_LIMIT);
@@ -575,6 +624,8 @@ static void send_gimbal(void)
     }
 
     cmd_last_control_type = cmd_ctx.type; // 记录本拍控制源（须在读取 seed_position 之后）
+
+    send_visual_debug_vofa((uint8_t)(visual_control_e == cmd_ctx.type));
 
     xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data);
 }
@@ -767,8 +818,9 @@ static void send_vision(void)
     // yaw/yaw_vel 回传的是 IMU 世界系量，与协议约定的"世界系 yaw"一致
     vision_send_data.yaw = RAD_TO_DEG(cmd_gimbal2cmd_data.yaw_position);
     /* pitch 与接收帧同一符号约定：线上 **负方向朝上**，本板内部正方向朝上 → 回传取反
-     * （位置/速度一致）。pitch_down 是下 pitch 机构位姿角，另一物理量，不参与镜像。 */
-    vision_send_data.pitch_base_relative = RAD_TO_DEG(-cmd_gimbal2cmd_data.pitch_position);
+     * （位置/速度一致）。位置还要先减掉内部零位 VISION_PITCH_ZERO_OFFSET，换成“水平=0”
+     * 的视觉坐标后再取反。pitch_down 是下 pitch 机构位姿角，另一物理量，不参与镜像。 */
+    vision_send_data.pitch_base_relative = RAD_TO_DEG(-(cmd_gimbal2cmd_data.pitch_position - VISION_PITCH_ZERO_OFFSET));
     vision_send_data.pitch_down = RAD_TO_DEG(cmd_gimbal2cmd_data.pitch_down_position); // 下pitch位姿角 (rad→deg)
     vision_send_data.yaw_vel = cmd_gimbal2cmd_data.yaw_vel;
     vision_send_data.pitch_base_relative_vel = -cmd_gimbal2cmd_data.pitch_vel;

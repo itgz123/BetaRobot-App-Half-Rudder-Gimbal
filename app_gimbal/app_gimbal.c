@@ -345,6 +345,10 @@ void AppGimbalInit(void)
     };
     DrvlibMotor_Config_s pitchup_ctrl_cfg = pitchdown_ctrl_cfg;
     pitchup_ctrl_cfg.lpf_rc = 0.004f; // 截止~40Hz, kp=40时ωn=11.3Hz总滞后140°裕度30° (电机8.6ms延迟限定了高kp必振荡)
+    /* 静止时编码器在两相邻计数间抖动，DM 内部测速给出每拍交替的 ±0.04 rad/s（fs/2）。
+     * 一阶 RC 在该频率只压一半，再串 2 点滑动平均把 Nyquist 分量消掉；
+     * 低频只多 1 ms 延迟（0.9 Hz 相位 -0.36°）。 */
+    pitchup_ctrl_cfg.speed_ma_enable = 1;
 
     DrvlibMotor_Config_s yaw_ctrl_cfg = {
         .loop_type = DRVLIB_MOTOR_LOOP_OPEN,
@@ -393,7 +397,7 @@ void AppGimbalInit(void)
             {
                 .gravity = 0.5f, // 重力前馈系数（标定 0.28→0.30）
                 .gear_ratio = 1,
-                .inertia = 0.0135f, // kg·m²（标定 0.012→0.008，前馈过大导致振幅放大）
+                .inertia = 0.012f, // kg·m²（标定 0.012→0.008，前馈过大导致振幅放大）
                 .friction_coulomb_pos = 0.0f,
                 .friction_coulomb_neg = 0.0f,
                 .friction_viscous_pos = 0.0f,
@@ -401,7 +405,7 @@ void AppGimbalInit(void)
             }, // 轴参数
         .sine_params =
             {
-                .amplitude = 0.12f,
+                .amplitude = 0.15f,
                 .freq = 2,
             }, // 正弦参数
         .chirp_params =
@@ -426,11 +430,11 @@ void AppGimbalInit(void)
          * kp=40 总滞后140°裕度30°。两环只开 P（ki/kd=0），与 MIT 的 PD 严格等效。 */
         .pos_pid =
             {
-                .kp = 25.0f, // 位置环 (rad/s)/rad，输出为速度设定值
+                .kp = 35, // 位置环 (rad/s)/rad，输出为速度设定值
             },
         .vel_pid =
             {
-                .kp = 0.4f, // 速度环 Nm/(rad/s)，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+                .kp = 0.55f, // 速度环 Nm/(rad/s)，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
             },
     };
     BSP_ASSERT_APP_CALL(AxisPidLiteInit(&pitchup_axis, &pitchup_axis_cfg));

@@ -58,10 +58,14 @@ typedef struct
     uint8_t shoot_rate;         /* 发射速率档（视觉端默认 3） */
     /* 单位约定：yaw/pitch_base_relative/target_yaw/target_pitch_base_relative 为 deg；
      * v_yaw/v_pitch_base_relative 为 rad/s；a_yaw/a_pitch_base_relative 为 rad/s² */
+    /* 符号约定：pitch 位置字段在线上是“向上为负”（视觉约定），本板内部统一“向上为正”。
+     * 注意：实测视觉发送的 v_pitch/a_pitch 与该位置字段不是同一镜像（v/a 与内部正方向
+     * 同号），故位置取反、v/a 不取反。符号与零位转换只在 app_cmd.c 的视觉收发分支做，
+     * 业务层看到的是内部坐标。 */
     float yaw;                        /* 视觉给出的世界系 yaw（视觉端 yaw，deg） */
-    float pitch_base_relative;        /* 视觉给出的总体 pitch：上 pitch 相对云台基座（视觉端 pitch，deg） */
+    float pitch_base_relative;        /* 视觉给出的总体 pitch：上 pitch 相对云台基座（视觉端 pitch，deg；向上为负） */
     float target_yaw;                 /* 视觉预测的目标世界系 yaw（视觉端 target_yaw，deg） */
-    float target_pitch_base_relative; /* 视觉预测的目标总体 pitch：上 pitch 相对云台基座（视觉端 target_pitch，deg） */
+    float target_pitch_base_relative; /* 视觉预测的目标总体 pitch：上 pitch 相对云台基座（视觉端 target_pitch，deg；向上为负） */
     float enable_yaw_diff;            /* 是否发弹。0:不发弹；1:发弹（连发） */
     float enable_pitch_diff;          /* 弹频。1:每秒2发；2:每秒4发；3:每秒6发 */
     float v_yaw;                      /* yaw 角速度前馈（视觉端 v_yaw，rad/s） */
@@ -82,6 +86,7 @@ typedef struct
     vision_mode_e mode;  /* 工作模式（视觉端 mode：0 IDLE / 1 AUTO_AIM / 2 SMALL_BUFF / 3 BIG_BUFF） */
     /* 单位约定：yaw/pitch_base_relative/pitch_down/roll 为 deg；
      * yaw_vel/pitch_base_relative_vel/roll_vel 为 rad/s；
+     * 符号约定：pitch_base_relative 用视觉约定“向上为负”（内部向上为正，app_cmd.c 发送前转换）；
      * v_x/v_y/v_z、bullet_speed 为 m/s */
     float yaw;                     /* 发给视觉的世界系 yaw（视觉端 yaw，deg） */
     float pitch_base_relative;     /* 发给视觉的总体 pitch：上 pitch 相对云台基座（视觉端 pitch，deg） */
