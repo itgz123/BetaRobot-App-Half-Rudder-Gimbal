@@ -13,6 +13,15 @@
 
 #include "robot_def.h" // TRIGGER_STEP_RAD / BULLET_SPEED_MAX / FRICTION_WHEEL_RADIUS / FRICTION_REDUCTION
 
+/* VOFA 调试块总开关（app_shoot.c 末尾，CH1~CH25）。
+ * 通道号是**全局共享**的：与 app_gimbal 的 axis 调试 (CH1~CH12)、
+ * drvlib_bmi088_kalman (CH1~CH15) 用的是同一块缓冲，并且本块自己调 VofaSend()。
+ * 同一时刻只能开一路，否则通道值互相覆盖、每拍还会发两帧：
+ *   整定云台轴 → 0（帧由 AppGimbalRun 的 GIMBAL_VOFA_SEND 发）
+ *   整定发射   → 1
+ * 只影响调试输出，不影响任何控制量。 */
+#define SHOOT_VOFA_ENABLE 0
+
 // 拨弹控制参数（实机整定；机械参数见 robot_def.h 的 TRIGGER_STEP_RAD）
 /* 拨盘驱动律（2026-10-11）：**位置闭环**，参考位置按模式两路生成（都在"一发 = TRIGGER_STEP_RAD
  * (≈13.468 rad)"这套机械量上工作）。

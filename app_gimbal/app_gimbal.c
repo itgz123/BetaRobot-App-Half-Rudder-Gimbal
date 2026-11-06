@@ -16,6 +16,15 @@
 //
 #include <stdbool.h> // 状态机守卫
 
+/* VOFA 自发送开关：axis 模块（drv_axis_mit_lite）只写通道、不自己发帧，
+ * 整定云台轴时由 AppGimbalRun 每拍发一帧（本任务 500 Hz）。
+ * ⚠ 同一时刻只能有一个发送者：若改用 drvlib_bmi088_kalman 的 vofa_enable（它自己发帧），
+ *   或打开 app_shoot 的调试块（SHOOT_VOFA_ENABLE=1），必须把这里置 0 ——
+ *   否则通道值互相覆盖，而且每拍会发两帧。
+ * ⚠ 与 axis 的 vofa_enable 配套：本开关=1 但没有任何 axis 打开 vofa_enable 时，
+ *   发出去的是残留通道值。 */
+#define GIMBAL_VOFA_SEND 1
+
 // 实例
 DRV_DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
 DRV_DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
@@ -140,7 +149,7 @@ static float yaw_motor_setref = 0;
  *   倒下中（falling）：重力前馈 + 速度闭环；
  *   倒下（lying）：输出 0，关闭重力前馈，靠自重和机械限位停住。 */
 #define GIMBAL_PITCHDOWN_GRAVITY 1.5f
-#define GIMBAL_PITCHDOWN_TORQUE_BIAS 2.0f // 最高点锁定时叠加的固定偏置（按实车标定）
+#define GIMBAL_PITCHDOWN_TORQUE_BIAS 2.5f // 最高点锁定时叠加的固定偏置（按实车标定）
 
 /* 速度环增益 (Nm/(rad/s))，仅上升/下降阶段工作。
  * 旧律速度项 kd*(v_ref-speed) 的 kd 约 1，先从 1.0 起调；过大会在换向/到位时振荡。 */
@@ -377,11 +386,12 @@ void AppGimbalInit(void)
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
+        // .vofa_enable = 1,
         .params =
             {
-                .gravity = 0.30f, // 重力前馈系数（标定 0.28→0.30）
+                .gravity = 0.5f, // 重力前馈系数（标定 0.28→0.30）
                 .gear_ratio = 1,
-                .inertia = 0.008f, // kg·m²（标定 0.012→0.008，前馈过大导致振幅放大）
+                .inertia = 0.0135f, // kg·m²（标定 0.012→0.008，前馈过大导致振幅放大）
                 .friction_coulomb_pos = 0.0f,
                 .friction_coulomb_neg = 0.0f,
                 .friction_viscous_pos = 0.0f,
@@ -389,7 +399,7 @@ void AppGimbalInit(void)
             }, // 轴参数
         .sine_params =
             {
-                .amplitude = 0.2f,
+                .amplitude = 0.12f,
                 .freq = 2,
             }, // 正弦参数
         .chirp_params =
@@ -408,8 +418,8 @@ void AppGimbalInit(void)
             }, // 多正弦叠加参数
         /* 973129e 为对接视觉把 kp/kd 从 6/0.6 调小到 4/0.4（terminal_lite 试调参），
          * 之后一直没恢复。这里回到 973129e 上一提交（c89d753）的整定值 6/0.6。 */
-        .kp = 24,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
-        .kd = 0.6f, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+        .kp = 16,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
+        .kd = 0.5f, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 
@@ -441,7 +451,7 @@ void AppGimbalInit(void)
     AxisMitLite_Init_Config_s yaw_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        // .vofa_enable = 1,                // 该轴写 VOFA 12 通道调试（多轴实例仅一个置 1）
+        .vofa_enable = 1,                // 该轴写 VOFA 12 通道调试（多轴实例仅一个置 1）
         .params =
             {
                 .gravity = 0.0f,
@@ -473,7 +483,7 @@ void AppGimbalInit(void)
             }, // 多正弦叠加参数
         /* 同样恢复 973129e 之前的 yaw 整定值 48/0.8（973129e 曾调小到 1/0.1，
          * 使 yaw 几乎只剩前馈、抗扰和跟随都很软）。 */
-        .kp = 20,   // 位置增益
+        .kp = 5,    // 位置增益
         .kd = 0.8f, // 速度增益
         // yaw 是 WRAP 环绕轴（±π 归一化）：误差需取最短路径，否则边界处跳变
         .error_normalize_range = 2.0f * M_PI, // 误差 wrap 到 [-π, π)
@@ -839,4 +849,10 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         .yaw_motor_vel = yaw_ctrl.data.speed,
     };
     xQueueOverwrite(gimbal2cmd_queue_handle, &gimbal2cmd_data);
+
+    /* VOFA：axis 模块已在本拍把通道写完（vofa_enable=1 的轴），这里统一发一帧。
+     * 必须放在所有 VofaSetChannel 之后、且全工程只能有一个发送者（见文件头的开关说明）。 */
+#if GIMBAL_VOFA_SEND
+    VofaSend();
+#endif
 }

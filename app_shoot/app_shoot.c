@@ -808,6 +808,9 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
         trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out = 0.0f; // 脱困沿：清掉"爬到突破值"的储能
     }
     trigger_stuck = stuck_now; // stuck_now 已含 drive（非驱动拍恒 0），脱困沿只在一条轨迹内部成立
+#if !SHOOT_VOFA_ENABLE
+    (void)stuck_cut; // 只供 VOFA CH15 观测；调试块关闭时避免 unused-but-set 警告
+#endif
 
     float trigger_cmd = trigger_out; // 方向已由控制核的 motor_direction 修正，这里不再取负
 
@@ -868,6 +871,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
      *   CH22 摩擦轮速度环输出 = 实下发 (A, app 正向)            CH23 摩擦轮速度环 I 项 (A)
      *   CH24 摩擦轮速度误差 (rad/s)                             CH25 摩擦轮使能且在线 (0/1)
      *        —— CH25 用来区分"过弹时没有尖峰"和"摩擦轮根本没转"（失能或 CAN 掉线） */
+#if SHOOT_VOFA_ENABLE
     VofaSetChannel(1, trigger_ref);
     VofaSetChannel(2, (float)trigger_motor_ctrl.data.position);
     VofaSetChannel(3, trigger_ref - (float)trigger_motor_ctrl.data.position);
@@ -896,6 +900,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(24, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].error);        // 速度误差 (rad/s)
     VofaSetChannel(25, (float)((shoot_friction_disable_e != shoot_cmd2shoot_data.friction_mode) && (fm.timestamp_us != 0))); // 使能(含减速)且在线
     VofaSend();
+#endif // SHOOT_VOFA_ENABLE
 
     // 3. 发送
     xQueueOverwrite(shoot2cmd_queue_handle, &shoot_shoot2cmd_data); // 通过队列
