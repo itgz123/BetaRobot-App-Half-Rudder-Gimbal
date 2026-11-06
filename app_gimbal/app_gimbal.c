@@ -8,7 +8,7 @@
 #include "drv_rsmotor.h"
 #include "drvlib_motor.h"
 #include "drv_vofa.h"
-#include "drv_axis_mit_lite.h"
+#include "drv_axis_pid_lite.h"
 #include "drvlib_bmi088_kalman.h"
 #include "lib_fsm_table.h" // 表驱动状态机（云台状态机）
 //
@@ -16,7 +16,7 @@
 //
 #include <stdbool.h> // 状态机守卫
 
-/* VOFA 自发送开关：axis 模块（drv_axis_mit_lite）只写通道、不自己发帧，
+/* VOFA 自发送开关：axis 模块（drv_axis_pid_lite）只写通道、不自己发帧，
  * 整定云台轴时由 AppGimbalRun 每拍发一帧（本任务 500 Hz）。
  * ⚠ 同一时刻只能有一个发送者：若改用 drvlib_bmi088_kalman 的 vofa_enable（它自己发帧），
  *   或打开 app_shoot 的调试块（SHOOT_VOFA_ENABLE=1），必须把这里置 0 ——
@@ -33,9 +33,9 @@ DRV_RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
 DRVLIB_MOTOR_INSTANCE_DEF(pitchdown_ctrl);
 DRVLIB_MOTOR_INSTANCE_DEF(pitchup_ctrl);
 DRVLIB_MOTOR_INSTANCE_DEF(yaw_ctrl);
-static AxisMitLiteInstance pitchup_axis;
-static AxisMitLiteInstance pitchdown_axis;
-static AxisMitLiteInstance yaw_axis;
+static AxisPidLiteInstance pitchup_axis;
+static AxisPidLiteInstance pitchdown_axis;
+static AxisPidLiteInstance yaw_axis;
 
 /* 掉线恢复：DM/RS 通信丢失后电机会自行退出 MIT 模式。drv 层刻意不持有使能状态
  * （不知道该不该重发），由 app 在 daemon 离线回调里重发使能 —— 云台三轴上电后
@@ -384,7 +384,7 @@ void AppGimbalInit(void)
     DaemonConfig(yaw_motor.daemon,
                  &(Daemon_Config_s){.reload_count = 100, .fault_action = DAEMON_FAULT_NONE, .callback = GimbalRSMotorReenable, .owner_id = &yaw_motor});
 
-    AxisMitLite_Init_Config_s pitchup_axis_cfg = {
+    AxisPidLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
         .vofa_enable = 1,
@@ -418,18 +418,28 @@ void AppGimbalInit(void)
                 .duration = 1,
                 .num_freqs = 10,
             }, // 多正弦叠加参数
-        /* 973129e 为对接视觉把 kp/kd 从 6/0.6 调小到 4/0.4（terminal_lite 试调参），
-         * 之后一直没恢复。这里回到 973129e 上一提交（c89d753）的整定值 6/0.6。 */
-        .kp = 10,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
-        .kd = 0.4f, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+        /* 串级 PID 与 MIT 版等效：
+         *   τ = vel_kp*[(pos_kp*(ref-pos) + ref_vel) - speed] + ff
+         *     = (pos_kp*vel_kp)*(ref-pos) + vel_kp*(ref_vel-speed) + ff
+         * 原 MIT 整定 kp=10 / kd=0.4，取 vel_kp=0.4、pos_kp=25 即等效（刚度 25*0.4=10）。
+         * 电机延迟 8.6ms 限定 kp 上限：kp=80 必振荡(16Hz位置环极限环)，
+         * kp=40 总滞后140°裕度30°。两环只开 P（ki/kd=0），与 MIT 的 PD 严格等效。 */
+        .pos_pid =
+            {
+                .kp = 25.0f, // 位置环 (rad/s)/rad，输出为速度设定值
+            },
+        .vel_pid =
+            {
+                .kp = 0.4f, // 速度环 Nm/(rad/s)，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+            },
     };
-    BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
+    BSP_ASSERT_APP_CALL(AxisPidLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 
     /* 下 pitch 轴：只用 FIXED_TORQUE 阶段的重力前馈 gravity*cos(pos)，
      * 模块内部的位置/速度闭环不参与；速度环、最高点偏置、上 pitch 耦合都在
      * AppGimbalRun 里按状态叠加（见 GIMBAL_PITCHDOWN_* 宏）。
-     * gravity=1.5 已实测准确；kp/kd 在 FIXED_TORQUE 下不生效，仅保留配置。 */
-    AxisMitLite_Init_Config_s pitchdown_axis_cfg = {
+     * gravity=1.5 已实测准确；双环 PID 在 FIXED_TORQUE 下不生效，仅保留配置。 */
+    AxisPidLite_Init_Config_s pitchdown_axis_cfg = {
         .stage = GIMBAL_PITCHDOWN_AXIS_STAGE,
         .delay_ms = 5000,
         .params =
@@ -445,12 +455,14 @@ void AppGimbalInit(void)
         .sine_params = {.amplitude = 0.2f, .freq = 2},
         .chirp_params = {.amplitude_start = 0.1f, .amplitude_end = 3, .duration = 15, .start_freq = 1, .end_freq = 8},
         .multi_sine_params = {.amplitude = 0.1f, .duration = 1, .num_freqs = 10},
-        .kp = 4.0f,
-        .kd = 2.0f,
+        /* FIXED_TORQUE 阶段 PID 不参与闭环，仅保留原 MIT 增益的等效占位：
+         * kp=4 / kd=2 ⇒ vel_kp=2、pos_kp=4/2=2。 */
+        .pos_pid = {.kp = 2.0f},
+        .vel_pid = {.kp = 2.0f},
     };
-    BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchdown_axis, &pitchdown_axis_cfg));
+    BSP_ASSERT_APP_CALL(AxisPidLiteInit(&pitchdown_axis, &pitchdown_axis_cfg));
 
-    AxisMitLite_Init_Config_s yaw_axis_cfg = {
+    AxisPidLite_Init_Config_s yaw_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
         // .vofa_enable = 1,
@@ -484,16 +496,22 @@ void AppGimbalInit(void)
                 .duration = 1,
                 .num_freqs = 10,
             }, // 多正弦叠加参数
-        /* 同样恢复 973129e 之前的 yaw 整定值 48/0.8（973129e 曾调小到 1/0.1，
-         * 使 yaw 几乎只剩前馈、抗扰和跟随都很软）。 */
-        .kp = 5,    // 位置增益
-        .kd = 0.8f, // 速度增益
+        /* 等效原 MIT 整定 kp=5 / kd=0.8：vel_kp=0.8、pos_kp=5/0.8=6.25。
+         * 两环只开 P（ki/kd=0），与 MIT 的 PD 严格等效。 */
+        .pos_pid =
+            {
+                .kp = 6.25f, // 位置环 (rad/s)/rad，输出为速度设定值；等效刚度 6.25*0.8=5
+            },
+        .vel_pid =
+            {
+                .kp = 0.8f, // 速度环 Nm/(rad/s)，等效阻尼
+            },
         // yaw 是 WRAP 环绕轴（±π 归一化）：误差需取最短路径，否则边界处跳变
         .error_normalize_range = 2.0f * M_PI, // 误差 wrap 到 [-π, π)
         .error_normalize_enable = 1,          // 启用环绕误差归一化
         // TUNE 正弦参考默认以延时结束时的当前位置为中心（drv 层内置），避免起始误差过大
     };
-    BSP_ASSERT_APP_CALL(AxisMitLiteInit(&yaw_axis, &yaw_axis_cfg));
+    BSP_ASSERT_APP_CALL(AxisPidLiteInit(&yaw_axis, &yaw_axis_cfg));
 
     // 注册 BMI088 + 卡尔曼（只注册子模块，Config 时配置硬件）
     BSP_ASSERT_APP_CALL(BMI088KalmanRegister(&bmi088));
@@ -547,7 +565,7 @@ void AppGimbalInit(void)
         /* ---- VOFA 调试输出 ----
          * 打开后 drvlib 每帧把 IMU 数据写进 CH1~CH15 并自己发帧（通道表见
          * drvlib_bmi088_kalman.h 头注释），app 这边不用再管 VOFA。
-         * ⚠ 与 drv_axis_mit_lite 的 vofa_enable(CH vofa_base_ch ~ +11)、app_shoot 的调试块
+         * ⚠ 与 drv_axis_pid_lite 的 vofa_enable(CH vofa_base_ch ~ +11)、app_shoot 的调试块
          *   (CH1~CH4) 共用通道号；要么错开起始通道，要么同一时刻只开一路。
          * 当前为 0：正在整定 app_shoot 的摩擦轮速度环（它占 CH1~CH4 并自己发帧），
          * 两路同时开会每拍发两帧、数据互相覆盖。调完摩擦轮把这里改回 1。 */
@@ -668,7 +686,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      *   yaw 漂移速率看 CH3 长时间趋势，转动 yaw 时 CH11 应约等于 d(CH3)/dt，
      *   且 CH1-2 基本不动。
      * 注意：帧由 drvlib 发出，app 不要再自己调 VofaSend（会多发一帧）；
-     *       而通道号是全局的 —— drv_axis_mit_lite 的 vofa_enable 占用
+     *       而通道号是全局的 —— drv_axis_pid_lite 的 vofa_enable 占用
      *       CH vofa_base_ch ~ +11、app_shoot.c 的调试块占用 CH1~CH4，
      *       要同时看就得把它们错开或用别的通道号；
      *       本 app 眼下是"整定发射就把这里关掉、发射调完再打开"（见下面 vofa_enable） */
@@ -744,12 +762,12 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         }
 
         // setref-pitchdown：axis 模块只取重力前馈（FIXED_TORQUE 阶段 ref 被忽略）
-        AxisMitLiteRef_s pitchdown_ref = {
+        AxisLiteRef_s pitchdown_ref = {
             .position = pitchdown_posture_ref,
             .speed = (dt_s > 0.0f) ? (pitchdown_step / dt_s) : 0.0f,
             .acceleration = 0.0f,
         };
-        pitchdown_motor_setref = AxisMitLiteCalculate(&pitchdown_axis, &pitchdown_state, &pitchdown_ref);
+        pitchdown_motor_setref = AxisPidLiteCalculate(&pitchdown_axis, &pitchdown_state, &pitchdown_ref);
 
         if (gimbal_state == gimbal_state_lying_e)
         {
@@ -784,7 +802,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         }
 
         // setref-pitchup
-        AxisMitLiteRef_s pitchup_ref;
+        AxisLiteRef_s pitchup_ref;
         if (pitchup_use_cmd)
         {
             // 立起/直立：外部设定值来自 cmd（含规划器给的 v/a）
@@ -799,7 +817,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
             pitchup_ref.speed = (dt_s > 0.0f) ? (pitchup_step / dt_s) : 0.0f;
             pitchup_ref.acceleration = 0.0f;
         }
-        pitchup_motor_setref = AxisMitLiteCalculate(&pitchup_axis, &pitchup_state, &pitchup_ref);
+        pitchup_motor_setref = AxisPidLiteCalculate(&pitchup_axis, &pitchup_state, &pitchup_ref);
 
         /* 上 pitch 单向耦合：只在最高点锁定时生效。
          * 上 pitch 输出为负时，其反作用需要下 pitch 同量补偿；
@@ -813,12 +831,12 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
     if (yaw_on)
     {
         // 外部设定值来自 cmd（NORMAL 阶段使用；当前 TUNE 阶段内部正弦，此参数被忽略）
-        AxisMitLiteRef_s yaw_ref = {
+        AxisLiteRef_s yaw_ref = {
             .position = gimbal_cmd2gimbal_data.yaw_x,
             .speed = gimbal_cmd2gimbal_data.yaw_v,
             .acceleration = gimbal_cmd2gimbal_data.yaw_a,
         };
-        yaw_motor_setref = AxisMitLiteCalculate(&yaw_axis, &yaw_state, &yaw_ref);
+        yaw_motor_setref = AxisPidLiteCalculate(&yaw_axis, &yaw_state, &yaw_ref);
     }
 
     // send：开环下返回值 = ref × motor_direction（方向修正仍在控制核里统一做）
