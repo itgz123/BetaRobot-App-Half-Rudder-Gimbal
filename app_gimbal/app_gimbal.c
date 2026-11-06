@@ -124,7 +124,7 @@ static float yaw_motor_setref = 0;
  *   立起端：保持较紧，避免没抬到位就报直立；
  *   倒下端：放宽松。倒下由速度环驱动、到点后只剩重力前馈（没有位置环），
  *           实际常停在 pitchdown_position_min 上方，阈值太紧会一直卡在 falling。 */
-#define GIMBAL_POSTURE_STAND_EPS 0.05f
+#define GIMBAL_POSTURE_STAND_EPS 0.10f
 #define GIMBAL_POSTURE_LYE_EPS 0.20f
 
 /* 姿态过渡速度 (rad/s)：
@@ -149,11 +149,12 @@ static float yaw_motor_setref = 0;
  *   倒下中（falling）：重力前馈 + 速度闭环；
  *   倒下（lying）：输出 0，关闭重力前馈，靠自重和机械限位停住。 */
 #define GIMBAL_PITCHDOWN_GRAVITY 1.5f
-#define GIMBAL_PITCHDOWN_TORQUE_BIAS 2.5f // 最高点锁定时叠加的固定偏置（按实车标定）
+#define GIMBAL_PITCHDOWN_TORQUE_BIAS 2.0f // 最高点锁定时叠加的固定偏置（按实车标定）
+#define PITCH_UP2DOWN_KP 0.0f
 
 /* 速度环增益 (Nm/(rad/s))，仅上升/下降阶段工作。
  * 旧律速度项 kd*(v_ref-speed) 的 kd 约 1，先从 1.0 起调；过大会在换向/到位时振荡。 */
-#define GIMBAL_PITCHDOWN_VEL_KV 1.0f
+#define GIMBAL_PITCHDOWN_VEL_KV 0.5f
 
 /* axis 模块只保留重力前馈（step1）。速度环/偏置/耦合都在 app 层另加；
  * 不要切到 NORMAL，否则模块内部的位置环会和这套律叠加。 */
@@ -386,7 +387,8 @@ void AppGimbalInit(void)
     AxisMitLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        // .vofa_enable = 1,
+        .vofa_enable = 1,
+        .vofa_base_ch = 1,
         .params =
             {
                 .gravity = 0.5f, // 重力前馈系数（标定 0.28→0.30）
@@ -418,8 +420,8 @@ void AppGimbalInit(void)
             }, // 多正弦叠加参数
         /* 973129e 为对接视觉把 kp/kd 从 6/0.6 调小到 4/0.4（terminal_lite 试调参），
          * 之后一直没恢复。这里回到 973129e 上一提交（c89d753）的整定值 6/0.6。 */
-        .kp = 16,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
-        .kd = 0.5f, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+        .kp = 10,   // 位置增益 (Nm/rad)，电机延迟8.6ms限定kp上限, kp=80必振荡(16Hz位置环极限环), kp=40总滞后140°裕度30°
+        .kd = 0.4f, // 速度增益，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
     };
     BSP_ASSERT_APP_CALL(AxisMitLiteInit(&pitchup_axis, &pitchup_axis_cfg));
 
@@ -451,7 +453,8 @@ void AppGimbalInit(void)
     AxisMitLite_Init_Config_s yaw_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        .vofa_enable = 1,                // 该轴写 VOFA 12 通道调试（多轴实例仅一个置 1）
+        // .vofa_enable = 1,
+        // .vofa_base_ch = 1,
         .params =
             {
                 .gravity = 0.0f,
@@ -544,8 +547,8 @@ void AppGimbalInit(void)
         /* ---- VOFA 调试输出 ----
          * 打开后 drvlib 每帧把 IMU 数据写进 CH1~CH15 并自己发帧（通道表见
          * drvlib_bmi088_kalman.h 头注释），app 这边不用再管 VOFA。
-         * ⚠ 与 drv_axis_mit_lite 的 vofa_enable(CH1~CH12)、app_shoot 的调试块
-         *   (CH1~CH4) 共用通道号，同一时刻只开一路。
+         * ⚠ 与 drv_axis_mit_lite 的 vofa_enable(CH vofa_base_ch ~ +11)、app_shoot 的调试块
+         *   (CH1~CH4) 共用通道号；要么错开起始通道，要么同一时刻只开一路。
          * 当前为 0：正在整定 app_shoot 的摩擦轮速度环（它占 CH1~CH4 并自己发帧），
          * 两路同时开会每拍发两帧、数据互相覆盖。调完摩擦轮把这里改回 1。 */
         .vofa_enable = 0,
@@ -665,8 +668,9 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      *   yaw 漂移速率看 CH3 长时间趋势，转动 yaw 时 CH11 应约等于 d(CH3)/dt，
      *   且 CH1-2 基本不动。
      * 注意：帧由 drvlib 发出，app 不要再自己调 VofaSend（会多发一帧）；
-     *       而通道号是全局的 —— drv_axis_mit_lite 的 vofa_enable 占用 CH1~CH12、
-     *       app_shoot.c 的调试块占用 CH1~CH4，要同时看就得把它们错开或用别的通道号；
+     *       而通道号是全局的 —— drv_axis_mit_lite 的 vofa_enable 占用
+     *       CH vofa_base_ch ~ +11、app_shoot.c 的调试块占用 CH1~CH4，
+     *       要同时看就得把它们错开或用别的通道号；
      *       本 app 眼下是"整定发射就把这里关掉、发射调完再打开"（见下面 vofa_enable） */
 
     // setref
@@ -802,7 +806,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
          * 上升/下降/倒下阶段不叠加，避免过渡过程中两轴互相拖拽。 */
         if ((gimbal_state == gimbal_state_stand_e) && (pitchup_motor_setref < 0.0f))
         {
-            pitchdown_motor_setref += -pitchup_motor_setref;
+            pitchdown_motor_setref += -pitchup_motor_setref * PITCH_UP2DOWN_KP;
         }
     }
     // setref-yaw
