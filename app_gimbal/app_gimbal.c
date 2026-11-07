@@ -400,11 +400,12 @@ void AppGimbalInit(void)
     AxisPidLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        .vofa_enable = 1,
+        .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
         .vofa_base_ch = 1,
+        .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
         .params =
             {
-                .gravity = 0.5f, // 重力前馈系数（标定 0.28→0.30）
+                .gravity = 0.389f, // 重力前馈系数（标定 0.28→0.30）
                 .gear_ratio = 1,
                 .inertia = 0.012f, // kg·m²（标定 0.012→0.008，前馈过大导致振幅放大）
                 .friction_coulomb_pos = 0.0f,
@@ -415,7 +416,7 @@ void AppGimbalInit(void)
         .sine_params =
             {
                 .amplitude = 0.15f,
-                .freq = 2,
+                .freq = 1.5f,
             }, // 正弦参数
         .chirp_params =
             {
@@ -439,11 +440,50 @@ void AppGimbalInit(void)
          * kp=40 总滞后140°裕度30°。两环只开 P（ki/kd=0），与 MIT 的 PD 严格等效。 */
         .pos_pid =
             {
-                .kp = 35, // 位置环 (rad/s)/rad，输出为速度设定值
+                .kp = 35,                   // 比例系数
+                .ki = 0,                    // 积分系数
+                .kd = 0,                    // 微分系数
+                .integral_limit = 0,        // 积分限幅阈值 (0 = 禁用)
+                .coef_a = 0,                // 变速积分参数 A (0 = 禁用)
+                .coef_b = 0,                // 变速积分参数 B
+                .d_lpf_rc = 0,              // 微分滤波时间常数 RC (0 = 禁用)
+                .out_lpf_rc = 0,            // 输出滤波时间常数 RC (0 = 禁用)
+                .deadband = 0,              // 死区范围 (0 = 禁用)
+                .error_normalize_range = 0, // 误差归一化范围 (0 = 禁用, 需要 PID_ENABLE_ERROR_NORMALIZE)
+                .out_max = 0,               // 输出上限 (需要 PID_ENABLE_OUTPUT_LIMIT)
+                .out_min = 0,               // 输出下限 (需要 PID_ENABLE_OUTPUT_LIMIT)
+                .config_mask = 0,           // 功能配置掩码
             },
+        /* 速度环整定依据（ig/vofa+.csv，TUNE 2 Hz 正弦，幅值 0.15 rad）：
+         *   实测跟踪误差 0.290 rad/s 峰峰值（增益 0.87、相位 +5°）；
+         *   用实测响应反推的等效被控对象约为 1/(J s + b)，J≈0.007、b≈0.10，
+         *   叠加约 14 ms 延迟后，P 环 kp=0.55 在 2 Hz 的预测误差为 0.287，与实测吻合。
+         *   - kp 保持 0.55：增益穿越 ≈77 rad/s(12.3 Hz)，计入延迟后相位裕度约 38°，
+         *     已接近该轴可用上限（kp=0.6 时裕度降到约 32°），不再加大。
+         *   - ki=2：积分转折 ki/kp≈3.6 rad/s(0.58 Hz)。2 Hz 处积分几乎不改变误差，
+         *     但 0.5 Hz 跟踪误差可降约 26%，并能把常值摩擦/重力残差造成的稳态误差压到 0。
+         *   - 积分限幅 0.25 Nm：覆盖最大速度下约 0.19 Nm 的等效阻尼力矩 + 摩擦余量，
+         *     同时避免大误差时积分在重力前馈上叠出过大偏置。
+         *   - 变速积分：|e|≤0.2 rad/s 全积分（小误差/稳态用），0.2~0.8 rad/s 线性减弱，
+         *     >0.8 rad/s 停止积分，防止换向/视觉跳变等大误差时积分饱和造成过冲。 */
         .vel_pid =
             {
-                .kp = 0.55f, // 速度环 Nm/(rad/s)，配合RC=0.004(截止40Hz), kp=40时ζ≈0.88, 阻尼有效
+                .kp = 0.55f,                     // 比例系数 Nm/(rad/s)
+                .ki = 2.0f,                      // 积分系数 Nm/(rad/s·s)
+                .kd = 0,                         // 微分系数
+                .integral_limit = 0.25f,         // 积分限幅阈值 (Nm)
+                .coef_a = 0.6f,                  // 变速积分参数 A (rad/s)：0.2~0.8 线性减弱
+                .coef_b = 0.2f,                  // 变速积分参数 B (rad/s)：|e|≤0.2 全积分
+                .d_lpf_rc = 0,                   // 微分滤波时间常数 RC (0 = 禁用)
+                .out_lpf_rc = 0,                 // 输出滤波时间常数 RC (0 = 禁用)
+                .deadband = 0,                   // 死区范围 (0 = 禁用)
+                .error_normalize_range = 0,      // 误差归一化范围 (0 = 禁用, 需要 PID_ENABLE_ERROR_NORMALIZE)
+                .out_max = 0,                    // 输出上限 (需要 PID_ENABLE_OUTPUT_LIMIT)
+                .out_min = 0,                    // 输出下限 (需要 PID_ENABLE_OUTPUT_LIMIT)
+                .config_mask =                   // 功能配置掩码
+                PID_ENABLE_INTEGRAL_LIMIT |      // 启用积分限幅
+                PID_ENABLE_TRAPEZOID_INTEGRAL |  // 启用梯形积分
+                PID_ENABLE_CHANGING_INTEGRATION, // 启用变速积分
             },
     };
     BSP_ASSERT_APP_CALL(AxisPidLiteInit(&pitchup_axis, &pitchup_axis_cfg));

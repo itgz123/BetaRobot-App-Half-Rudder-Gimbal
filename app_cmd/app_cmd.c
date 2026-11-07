@@ -496,22 +496,22 @@ static robot_mode gimbal_mode_effective(void)
  * 非视觉源时 CH13~CH16、CH21~CH24 置 0。
  * 判符号：视觉帧是保持的，只取 CH24 变化（或 CH13/CH17 跳变）的采样点做跨帧差分；
  * 内部位置对时间求导与 CH15 同号 → 当前“位置取反、v/a 不取反”正确，反号则 v/a 也要取反。 */
-static void send_visual_debug_vofa(uint8_t valid)
-{
-    VofaSetChannel(13, valid ? vision_recv_data.pitch_base_relative : 0.0f);
-    VofaSetChannel(14, valid ? vision_recv_data.target_pitch_base_relative : 0.0f);
-    VofaSetChannel(15, valid ? vision_recv_data.v_pitch_base_relative : 0.0f);
-    VofaSetChannel(16, valid ? vision_recv_data.a_pitch_base_relative : 0.0f);
-    VofaSetChannel(17, cmd_cmd2gimbal_data.pitch_x);
-    VofaSetChannel(18, cmd_cmd2gimbal_data.pitch_v);
-    VofaSetChannel(19, cmd_cmd2gimbal_data.pitch_a);
-    VofaSetChannel(20, cmd_gimbal2cmd_data.pitch_position);
-    VofaSetChannel(21, valid ? vision_recv_data.yaw : 0.0f);
-    VofaSetChannel(22, valid ? vision_recv_data.v_yaw : 0.0f);
-    VofaSetChannel(23, valid ? vision_recv_data.a_yaw : 0.0f);
-    VofaSetChannel(24, valid ? (float)(vision_recv_data.time_stamp % 100000u) * 0.001f : 0.0f);
-    VofaSetChannel(25, (float)valid);
-}
+// static void send_visual_debug_vofa(uint8_t valid)
+// {
+//     VofaSetChannel(13, valid ? vision_recv_data.pitch_base_relative : 0.0f);
+//     VofaSetChannel(14, valid ? vision_recv_data.target_pitch_base_relative : 0.0f);
+//     VofaSetChannel(15, valid ? vision_recv_data.v_pitch_base_relative : 0.0f);
+//     VofaSetChannel(16, valid ? vision_recv_data.a_pitch_base_relative : 0.0f);
+//     VofaSetChannel(17, cmd_cmd2gimbal_data.pitch_x);
+//     VofaSetChannel(18, cmd_cmd2gimbal_data.pitch_v);
+//     VofaSetChannel(19, cmd_cmd2gimbal_data.pitch_a);
+//     VofaSetChannel(20, cmd_gimbal2cmd_data.pitch_position);
+//     VofaSetChannel(21, valid ? vision_recv_data.yaw : 0.0f);
+//     VofaSetChannel(22, valid ? vision_recv_data.v_yaw : 0.0f);
+//     VofaSetChannel(23, valid ? vision_recv_data.a_yaw : 0.0f);
+//     VofaSetChannel(24, valid ? (float)(vision_recv_data.time_stamp % 100000u) * 0.001f : 0.0f);
+//     VofaSetChannel(25, (float)valid);
+// }
 
 // 给云台（队列）：统一上下文 → 位置/速度/加速度
 static void send_gimbal(void)
@@ -625,7 +625,7 @@ static void send_gimbal(void)
 
     cmd_last_control_type = cmd_ctx.type; // 记录本拍控制源（须在读取 seed_position 之后）
 
-    send_visual_debug_vofa((uint8_t)(visual_control_e == cmd_ctx.type));
+    // send_visual_debug_vofa((uint8_t)(visual_control_e == cmd_ctx.type));
 
     xQueueOverwrite(cmd2gimbal_queue_handle, &cmd_cmd2gimbal_data);
 }
