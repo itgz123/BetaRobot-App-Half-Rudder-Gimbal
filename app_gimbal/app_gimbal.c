@@ -93,6 +93,7 @@ static cmd2gimbal_data_t gimbal_cmd2gimbal_data; // cmd2gimbal
 static float pitchdown_motor_setref = 0;
 static float pitchup_motor_setref = 0;
 static float yaw_motor_setref = 0;
+static uint64_t gimbal_enable_last_ms = 0; // 上次周期重发使能的时刻 (ms)
 
 /*============================================
  *        云台状态机（lib_fsm_table）
@@ -155,6 +156,12 @@ static float yaw_motor_setref = 0;
 /* 速度环增益 (Nm/(rad/s))，仅上升/下降阶段工作。
  * 旧律速度项 kd*(v_ref-speed) 的 kd 约 1，先从 1.0 起调；过大会在换向/到位时振荡。 */
 #define GIMBAL_PITCHDOWN_VEL_KV 0.5f
+
+/* 周期重发使能 (ms)。
+ * 只在初始化发一次 0xFC 时：若 STM 先上电、电机后上电（或 RS05 上电后还在 CALI，
+ * 期间不接受 MIT 命令），那一帧就丢了，电机一直停在未使能。这里每 100ms 无条件重发，
+ * 任何时刻上电的电机最多 100ms 后进入 MIT 模式。离线回调仍保留，负责断线期间的快速重试。 */
+#define GIMBAL_ENABLE_RESEND_MS 100u
 
 /* axis 模块只保留重力前馈（step1）。速度环/偏置/耦合都在 app 层另加；
  * 不要切到 NORMAL，否则模块内部的位置环会和这套律叠加。 */
@@ -377,7 +384,9 @@ void AppGimbalInit(void)
     DrvlibMotorEnable(&pitchup_ctrl);
     DrvlibMotorEnable(&yaw_ctrl);
 
-    /* 协议层使能 + 掉线重使能（drv 不持有使能状态，策略归 app） */
+    /* 协议层使能 + 掉线重使能（drv 不持有使能状态，策略归 app）。
+     * 这里先发一次；AppGimbalRun 里还会每 GIMBAL_ENABLE_RESEND_MS 无条件重发，
+     * 覆盖"STM 先上电、电机后上电"和 RS05 上电后 CALI 期间丢命令的情况。 */
     DrvDMMotorSendCmd(&pitchdown_motor, DRV_DM_CMD_MOTOR_MODE);
     DrvDMMotorSendCmd(&pitchup_motor, DRV_DM_CMD_MOTOR_MODE);
     DrvRSMotorSendCmd(&yaw_motor, DRV_RS_CMD_MOTOR_MODE);
@@ -596,8 +605,19 @@ void AppGimbalInit(void)
 
 ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
 {
-    (void)time_stamp;
     const float dt_s = dt * 0.001f; // APP_TASK_DEF 的 dt 是 ms，drvlib 要秒
+
+    /* 周期重发使能：只发一次时，电机晚于 STM 上电会永远收不到 0xFC（RS05 上电后
+     * 还有一段 CALI 不接受 MIT 命令）。无条件按固定周期重发，不依赖 daemon 的在线状态；
+     * 与离线回调的重发并存，最多多发几帧，对总线无压力。 */
+    if ((time_stamp - gimbal_enable_last_ms) >= (uint64_t)GIMBAL_ENABLE_RESEND_MS)
+    {
+        gimbal_enable_last_ms = time_stamp;
+        DrvDMMotorSendCmd(&pitchdown_motor, DRV_DM_CMD_MOTOR_MODE);
+        DrvDMMotorSendCmd(&pitchup_motor, DRV_DM_CMD_MOTOR_MODE);
+        DrvRSMotorSendCmd(&yaw_motor, DRV_RS_CMD_MOTOR_MODE);
+    }
+
     // 接收消息
     xQueueReceive(cmd2gimbal_queue_handle, &gimbal_cmd2gimbal_data, 0);
 
