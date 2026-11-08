@@ -200,7 +200,7 @@
  *   旧两版同样病在"拿实测当基准"：第三版"实测 + N×STEP"让收尾超调逐发累加（35 次单发后超前
  *   整一格 ≈ 多送一颗弹）；更早的"相对链 + 重锚"（TRIGGER_GRID_RESYNC_RAD = 0.5 步，**该宏已
  *   删除**）实测 90 发相位趋势 −63.4°/100 发、最小 −46.9°，已超过一个孔位。
- *   证据：ignore/vofa+.csv，脚本 drvlib/drvlib_motor/tools/analyze_trigger_spin.py
+ *   证据：ignore/vofa+.csv，脚本 lib/lib_motor/tools/analyze_trigger_spin.py
  *   （--net-check 量逐发净推进、--stop-check 量停机瞬时相位、--zoom 逐拍回放）。
  *
  * 【为什么"没有网格追回"也收敛】参考自持，停机时**保持**在上一发的格点上（不看实测）；机构少走
@@ -240,7 +240,7 @@
  * 真正的弹速闭环（多档位 / 裁判弹速）接线后，再由 BULLET_SPEED_TO_MOTOR_RADPS(弹速) 换算目标值
  *   —— 那个宏保留着（见文件末尾），届时要先确认 FRICTION_REDUCTION 的机械口径。
  * 证据：ignore/vofa+.csv（60000 点 / 120.7 s / 25 通道），复现脚本
- *   drvlib/drvlib_motor/tools/analyze_trigger_spin.py。 */
+ *   lib/lib_motor/tools/analyze_trigger_spin.py。 */
 #define FRICTION_SPEED_FULL 400.0f
 
 /* 过洞放行阈值 (rad/s)：摩擦轮转速低于此值时，shoot 向 cmd 回报
@@ -406,7 +406,7 @@
  * 【与 §静摩擦前馈 的关系】那条路（卡住时抬 1.35 A 突破前馈）是"主动让脱困早点发生"；本机制是
  *   "脱困后别冲飞 + 真卡死别烧"。两者不冲突、可叠加。注意本机制**不改变爬升耗时**，
  *   要治"要等 1 s 才动"还得上前馈。
- * 【阈值口径】用**速度环输出**（= DrvlibMotorSetRef 的返回值，P+I+前馈 的合成值），不是只看
+ * 【阈值口径】用**速度环输出**（= LibMotorSetRef 的返回值，P+I+前馈 的合成值），不是只看
  *   积分项 —— 低速档 P 项小、与积分接近，巡航时 P 项可以很大，故阈值须留够余量（见下）。 */
 #define TRIGGER_STUCK_CMD_BAND 5.0f    // ①"期望要动"的前馈速度门限 (rad/s)：低于它不算卡住（轨迹起停段）
 #define TRIGGER_STUCK_SPEED_BAND 0.4f  // ②判据的**绝对下限** (rad/s)：前馈很小时兜底（沿用 §静摩擦前馈 口径 ≈4 rpm）

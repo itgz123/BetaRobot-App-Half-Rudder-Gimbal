@@ -673,7 +673,7 @@
           +积分"比。                                                     
       520 +     *               同时 CH1-2/CH14-15 应基本不动            
       521       *
-      522       * 注意：drv_axis_mit_lite 的 vofa_enable 同样占用 CH1~CH1
+      522       * 注意：lib_axis_mit_lite 的 vofa_enable 同样占用 CH1~CH1
            2，
       523       *       若后续要开某个轴的调试输出，需先让出/错开这些通道
             */

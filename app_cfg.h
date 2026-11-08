@@ -8,7 +8,7 @@
 #define __APP_CFG_H
 
 /* 锁定 BetaRobot 主仓库版本；未定义或版本不匹配时 BetaRobot_version.h 会 #error */
-#define APP_LOCKED_BETAROBOT_VERSION 20261107182829
+#define APP_LOCKED_BETAROBOT_VERSION 20261108131221
 
 #include "bsp_map.h"
 #include "robot_def.h"
@@ -41,9 +41,9 @@
 #define DRV_LKMOTOR_USED            // LK 电机驱动（drv 纯协议版一对一，暂未被 app 引用）
 #define DRV_DJIMOTOR_BROADCAST_USED // DJI 电机驱动（drv 纯协议版一拖四广播；app_shoot）
 #define DRV_LKMOTOR_BROADCAST_USED  // LK 电机驱动（drv 纯协议版一拖四广播，暂未被 app 引用）
-#define DRVLIB_MOTOR_USED           // 三级级联 PID + 反馈后处理（drv 之上；app_shoot + 云台三轴）
-#define DRV_AXIS_MIT_LITE_USED      // 单轴 MIT 关节控制
-#define DRV_AXIS_PID_LITE_USED      // 单轴位置+速度串级 PID 关节控制
+#define LIB_MOTOR_USED              // 三级级联 PID + 反馈后处理（lib 层；app_shoot + 云台三轴）
+#define LIB_AXIS_MIT_LITE_USED      // 单轴 MIT 关节控制
+#define LIB_AXIS_PID_LITE_USED      // 单轴位置+速度串级 PID 关节控制
 #define DAEMON_USED                 // Daemon 看门狗
 #define DRV_BUZZER_USED             // 蜂鸣器驱动（PWM 节拍/音调/音量 + 报警与音乐仲裁）
 #define VOFA_USED                   // VOFA+ JustFloat 遥测

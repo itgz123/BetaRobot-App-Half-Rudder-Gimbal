@@ -6,9 +6,9 @@
 //
 #include "drv_dmmotor.h"
 #include "drv_rsmotor.h"
-#include "drvlib_motor.h"
+#include "lib_motor.h"
 #include "drv_vofa.h"
-#include "drv_axis_pid_lite.h"
+#include "lib_axis_pid_lite.h"
 #include "drvlib_bmi088_kalman.h"
 #include "lib_fsm_table.h" // 表驱动状态机（云台状态机）
 //
@@ -16,7 +16,7 @@
 //
 #include <stdbool.h> // 状态机守卫
 
-/* VOFA 自发送开关：axis 模块（drv_axis_pid_lite）只写通道、不自己发帧，
+/* VOFA 自发送开关：axis 模块（lib_axis_pid_lite）只写通道、不自己发帧，
  * 整定云台轴时由 AppGimbalRun 每拍发一帧（本任务 500 Hz）。
  * ⚠ 同一时刻只能有一个发送者：若改用 drvlib_bmi088_kalman 的 vofa_enable（它自己发帧），
  *   或打开 app_shoot 的调试块（SHOOT_VOFA_ENABLE=1），必须把这里置 0 ——
@@ -29,10 +29,10 @@
 DRV_DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
 DRV_DMMOTOR_INSTANCE_DEF(pitchup_motor);   // 上pitch电机
 DRV_RSMOTOR_INSTANCE_DEF(yaw_motor);       // yaw电机（RS05）
-/* 三轴控制核：开环透传，只借用 drvlib_motor 的反馈后处理（多圈/方向/低通） */
-DRVLIB_MOTOR_INSTANCE_DEF(pitchdown_ctrl);
-DRVLIB_MOTOR_INSTANCE_DEF(pitchup_ctrl);
-DRVLIB_MOTOR_INSTANCE_DEF(yaw_ctrl);
+/* 三轴控制核：开环透传，只借用 lib_motor 的反馈后处理（多圈/方向/低通） */
+LIB_MOTOR_INSTANCE_DEF(pitchdown_ctrl);
+LIB_MOTOR_INSTANCE_DEF(pitchup_ctrl);
+LIB_MOTOR_INSTANCE_DEF(yaw_ctrl);
 static AxisPidLiteInstance pitchup_axis;
 static AxisPidLiteInstance pitchdown_axis;
 static AxisPidLiteInstance yaw_axis;
@@ -288,7 +288,7 @@ void AppGimbalInit(void)
     BSP_ASSERT_APP_CALL(DrvRSMotorRegister(&yaw_motor));
 
     /* drv 层只做协议映射：量程必须与上位机一致（DM 调试助手 / 灵足上位机）。
-     * 方向、滤波、多圈、开环透传全在下面的 drvlib_motor 配置里。 */
+     * 方向、滤波、多圈、开环透传全在下面的 lib_motor 配置里。 */
     // 配置下pitch
     DrvDMMotorConfig_s pitchdown_cfg = {
         .can_e = CAN_2,
@@ -331,58 +331,58 @@ void AppGimbalInit(void)
     };
     BSP_ASSERT_APP_CALL(DrvRSMotorConfig(&yaw_motor, &yaw_cfg));
 
-    /* 三轴控制核（开环）：app 侧用 axis_lite 算力矩，drvlib_motor 只做反馈后处理，
+    /* 三轴控制核（开环）：app 侧用 axis_lite 算力矩，lib_motor 只做反馈后处理，
      * 落点与旧 drv_motor 相同：
      *   - pitch：旧 LIMITED(0,0) 实际不限幅 → CONTINUOUS；span=2π（DM 协议 ±π）
      *   - yaw  ：WRAP ±π、span=0（无减速箱，直接用单圈绝对位置，不做多圈累加）；
      *            feedback/motor 均 REVERSE（镜像后同步翻）
      *   - 速度低通 RC 沿用旧整定；转矩不滤波 */
-    DrvlibMotor_Config_s pitchdown_ctrl_cfg = {
-        .loop_type = DRVLIB_MOTOR_LOOP_OPEN,
-        .motor_direction = DRVLIB_MOTOR_DIRECTION_NORMAL,    // 输出方向
-        .feedback_direction = DRVLIB_MOTOR_DIRECTION_NORMAL, // 反馈方向
-        .position_mode = DRVLIB_MOTOR_POS_CONTINUOUS,
+    LibMotor_Config_s pitchdown_ctrl_cfg = {
+        .loop_type = LIB_MOTOR_LOOP_OPEN,
+        .motor_direction = LIB_MOTOR_DIRECTION_NORMAL,    // 输出方向
+        .feedback_direction = LIB_MOTOR_DIRECTION_NORMAL, // 反馈方向
+        .position_mode = LIB_MOTOR_POS_CONTINUOUS,
         .position_span = 2.0f * (float)M_PI,
         .position_offset = 0.0f,
-        .lpf_enable = DRVLIB_MOTOR_LPF_ENABLE,
+        .lpf_enable = LIB_MOTOR_LPF_ENABLE,
         .lpf_rc = 0.1f,
         .current_lpf_rc = 0.0f,
         .dt_max = 0.01f,
         .vofa_enable = 0,
     };
-    DrvlibMotor_Config_s pitchup_ctrl_cfg = pitchdown_ctrl_cfg;
+    LibMotor_Config_s pitchup_ctrl_cfg = pitchdown_ctrl_cfg;
     pitchup_ctrl_cfg.lpf_rc = 0.004f; // 截止~40Hz, kp=40时ωn=11.3Hz总滞后140°裕度30° (电机8.6ms延迟限定了高kp必振荡)
     /* 静止时编码器在两相邻计数间抖动，DM 内部测速给出每拍交替的 ±0.04 rad/s（fs/2）。
      * 一阶 RC 在该频率只压一半，再串 2 点滑动平均把 Nyquist 分量消掉；
      * 低频只多 1 ms 延迟（0.9 Hz 相位 -0.36°）。 */
     pitchup_ctrl_cfg.speed_ma_enable = 1;
 
-    DrvlibMotor_Config_s yaw_ctrl_cfg = {
-        .loop_type = DRVLIB_MOTOR_LOOP_OPEN,
-        .motor_direction = DRVLIB_MOTOR_DIRECTION_REVERSE,    // 输出方向：镜像后 正力矩→逆时针（与反馈同步翻，闭环稳定）
-        .feedback_direction = DRVLIB_MOTOR_DIRECTION_REVERSE, // 反馈方向：镜像后 逆时针→正角度（原编码器逆时针为负）
-        .position_mode = DRVLIB_MOTOR_POS_WRAP,
+    LibMotor_Config_s yaw_ctrl_cfg = {
+        .loop_type = LIB_MOTOR_LOOP_OPEN,
+        .motor_direction = LIB_MOTOR_DIRECTION_REVERSE,    // 输出方向：镜像后 正力矩→逆时针（与反馈同步翻，闭环稳定）
+        .feedback_direction = LIB_MOTOR_DIRECTION_REVERSE, // 反馈方向：镜像后 逆时针→正角度（原编码器逆时针为负）
+        .position_mode = LIB_MOTOR_POS_WRAP,
         .angle_limit_min = -(float)M_PI,
         .angle_limit_max = (float)M_PI,
         .position_span = 0.0f, // 无减速箱：编码器单圈位置即绝对 wrap 角，不做软件多圈累加（避免圈数多后累计误差）
         .position_offset = 0.0f,
-        .lpf_enable = DRVLIB_MOTOR_LPF_ENABLE,
+        .lpf_enable = LIB_MOTOR_LPF_ENABLE,
         .lpf_rc = 0.004f,
         .current_lpf_rc = 0.0f,
         .dt_max = 0.01f,
         .vofa_enable = 0,
     };
 
-    BSP_ASSERT_APP_CALL(DrvlibMotorRegister(&pitchdown_ctrl));
-    BSP_ASSERT_APP_CALL(DrvlibMotorRegister(&pitchup_ctrl));
-    BSP_ASSERT_APP_CALL(DrvlibMotorRegister(&yaw_ctrl));
-    BSP_ASSERT_APP_CALL(DrvlibMotorConfig(&pitchdown_ctrl, &pitchdown_ctrl_cfg));
-    BSP_ASSERT_APP_CALL(DrvlibMotorConfig(&pitchup_ctrl, &pitchup_ctrl_cfg));
-    BSP_ASSERT_APP_CALL(DrvlibMotorConfig(&yaw_ctrl, &yaw_ctrl_cfg));
+    BSP_ASSERT_APP_CALL(LibMotorRegister(&pitchdown_ctrl));
+    BSP_ASSERT_APP_CALL(LibMotorRegister(&pitchup_ctrl));
+    BSP_ASSERT_APP_CALL(LibMotorRegister(&yaw_ctrl));
+    BSP_ASSERT_APP_CALL(LibMotorConfig(&pitchdown_ctrl, &pitchdown_ctrl_cfg));
+    BSP_ASSERT_APP_CALL(LibMotorConfig(&pitchup_ctrl, &pitchup_ctrl_cfg));
+    BSP_ASSERT_APP_CALL(LibMotorConfig(&yaw_ctrl, &yaw_ctrl_cfg));
 
-    DrvlibMotorEnable(&pitchdown_ctrl);
-    DrvlibMotorEnable(&pitchup_ctrl);
-    DrvlibMotorEnable(&yaw_ctrl);
+    LibMotorEnable(&pitchdown_ctrl);
+    LibMotorEnable(&pitchup_ctrl);
+    LibMotorEnable(&yaw_ctrl);
 
     /* 协议层使能 + 掉线重使能（drv 不持有使能状态，策略归 app）。
      * 这里先发一次；AppGimbalRun 里还会每 GIMBAL_ENABLE_RESEND_MS 无条件重发，
@@ -618,7 +618,7 @@ void AppGimbalInit(void)
         /* ---- VOFA 调试输出 ----
          * 打开后 drvlib 每帧把 IMU 数据写进 CH1~CH15 并自己发帧（通道表见
          * drvlib_bmi088_kalman.h 头注释），app 这边不用再管 VOFA。
-         * ⚠ 与 drv_axis_pid_lite 的 vofa_enable(CH vofa_base_ch ~ +11)、app_shoot 的调试块
+         * ⚠ 与 lib_axis_pid_lite 的 vofa_enable(CH vofa_base_ch ~ +11)、app_shoot 的调试块
          *   (CH1~CH4) 共用通道号；要么错开起始通道，要么同一时刻只开一路。
          * 当前为 0：正在整定 app_shoot 的摩擦轮速度环（它占 CH1~CH4 并自己发帧），
          * 两路同时开会每拍发两帧、数据互相覆盖。调完摩擦轮把这里改回 1。 */
@@ -669,28 +669,28 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
     const DrvDMMotorData_s pitchup_data = DrvDMMotorGetData(&pitchup_motor);
     const DrvRSMotorData_s yaw_data = DrvRSMotorGetData(&yaw_motor);
 
-    const DrvlibMotorFeedback_s pitchdown_fb = {
+    const LibMotorFeedback_s pitchdown_fb = {
         .position = pitchdown_data.position,
         .speed = pitchdown_data.speed,
         .current = pitchdown_data.torque, // 最内环语义是电流；DM/RS 这里喂扭矩
         .timestamp_us = pitchdown_data.timestamp_us,
     };
-    const DrvlibMotorFeedback_s pitchup_fb = {
+    const LibMotorFeedback_s pitchup_fb = {
         .position = pitchup_data.position,
         .speed = pitchup_data.speed,
         .current = pitchup_data.torque,
         .timestamp_us = pitchup_data.timestamp_us,
     };
-    const DrvlibMotorFeedback_s yaw_fb = {
+    const LibMotorFeedback_s yaw_fb = {
         .position = yaw_data.position,
         .speed = yaw_data.speed,
         .current = yaw_data.torque,
         .timestamp_us = yaw_data.timestamp_us,
     };
 
-    (void)DrvlibMotorSetRef(&pitchdown_ctrl, 0.0f, &pitchdown_fb, dt_s);
-    (void)DrvlibMotorSetRef(&pitchup_ctrl, 0.0f, &pitchup_fb, dt_s);
-    (void)DrvlibMotorSetRef(&yaw_ctrl, 0.0f, &yaw_fb, dt_s);
+    (void)LibMotorSetRef(&pitchdown_ctrl, 0.0f, &pitchdown_fb, dt_s);
+    (void)LibMotorSetRef(&pitchup_ctrl, 0.0f, &pitchup_fb, dt_s);
+    (void)LibMotorSetRef(&yaw_ctrl, 0.0f, &yaw_fb, dt_s);
 
     // 计算当前状态
     const float pitchdown_pos = (float)pitchdown_ctrl.data.position;
@@ -750,7 +750,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      *   yaw 漂移速率看 CH3 长时间趋势，转动 yaw 时 CH11 应约等于 d(CH3)/dt，
      *   且 CH1-2 基本不动。
      * 注意：帧由 drvlib 发出，app 不要再自己调 VofaSend（会多发一帧）；
-     *       而通道号是全局的 —— drv_axis_pid_lite 的 vofa_enable 占用
+     *       而通道号是全局的 —— lib_axis_pid_lite 的 vofa_enable 占用
      *       CH vofa_base_ch ~ +11、app_shoot.c 的调试块占用 CH1~CH4，
      *       要同时看就得把它们错开或用别的通道号；
      *       本 app 眼下是"整定发射就把这里关掉、发射调完再打开"（见下面 vofa_enable） */
@@ -904,9 +904,9 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
     }
 
     // send：开环下返回值 = ref × motor_direction（方向修正仍在控制核里统一做）
-    const float pitchup_out = DrvlibMotorSetRef(&pitchup_ctrl, pitchup_motor_setref, &pitchup_fb, dt_s);
-    const float pitchdown_out = DrvlibMotorSetRef(&pitchdown_ctrl, pitchdown_motor_setref, &pitchdown_fb, dt_s);
-    const float yaw_out = DrvlibMotorSetRef(&yaw_ctrl, yaw_motor_setref, &yaw_fb, dt_s);
+    const float pitchup_out = LibMotorSetRef(&pitchup_ctrl, pitchup_motor_setref, &pitchup_fb, dt_s);
+    const float pitchdown_out = LibMotorSetRef(&pitchdown_ctrl, pitchdown_motor_setref, &pitchdown_fb, dt_s);
+    const float yaw_out = LibMotorSetRef(&yaw_ctrl, yaw_motor_setref, &yaw_fb, dt_s);
 
     DrvDMMotorSetRef(&pitchup_motor, pitchup_out);
     DrvDMMotorSetRef(&pitchdown_motor, pitchdown_out);

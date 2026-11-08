@@ -6,7 +6,7 @@
 #include "robot_def.h"     // gimbal限位/速度/加速度宏 + TRIGGER_STEP_RAD（每发机构转角）
 //
 #include "drv_djimotor_broadcast.h" // DJI 广播纯协议层
-#include "drvlib_motor.h"           // 三级级联 PID 控制核
+#include "lib_motor.h"              // 三级级联 PID 控制核
 #include "lib_fsm_table.h"          // 表驱动状态机（拨弹状态机）
 #include "lib_traj.h"               // 单轴轨迹核心（段/轨迹/按时间采样）
 #include "lib_traj_jerk.h"          // jerk 受限点到点规划器
@@ -21,10 +21,10 @@
 // 实例
 DRV_DJIMOTOR_BROADCAST_INSTANCE_DEF(friction_motor);    // 摩擦轮 M3508 (C620)
 DRV_DJIMOTOR_BROADCAST_GROUP_DEF(friction_motor_group); // 摩擦轮广播组（一条总线一组）
-DRVLIB_MOTOR_INSTANCE_DEF(friction_motor_ctrl);         // 摩擦轮速度环（三级 PID 核的中间环）
+LIB_MOTOR_INSTANCE_DEF(friction_motor_ctrl);            // 摩擦轮速度环（三级 PID 核的中间环）
 DRV_DJIMOTOR_BROADCAST_INSTANCE_DEF(trigger_motor);     // 拨弹 M3508 (C620)
 DRV_DJIMOTOR_BROADCAST_GROUP_DEF(trigger_motor_group);  // 拨弹广播组（CAN_1，独立于摩擦轮组）
-DRVLIB_MOTOR_INSTANCE_DEF(trigger_motor_ctrl);          // 拨弹 速度环（三级 PID 核的中环；无位置环）
+LIB_MOTOR_INSTANCE_DEF(trigger_motor_ctrl);             // 拨弹 速度环（三级 PID 核的中环；无位置环）
 // 通信
 static cmd2shoot_data_t shoot_cmd2shoot_data; // cmd-shoot
 static shoot2cmd_data_t shoot_shoot2cmd_data; // shoot-cmd
@@ -256,33 +256,33 @@ void AppShootInit(void)
     BSP_ASSERT_APP_CALL(DrvDJIMotorBroadcastConfig(&friction_motor, &friction_motor_cfg));
 
     // 控制核：速度环（ref = rad/s → PID → 电流）
-    DrvlibMotor_Config_s friction_motor_ctrl_cfg = {
-        .loop_type = DRVLIB_MOTOR_LOOP_SPEED, // 速度闭环
+    LibMotor_Config_s friction_motor_ctrl_cfg = {
+        .loop_type = LIB_MOTOR_LOOP_SPEED, // 速度闭环
         /* 安装方向（2026-10-10 看实机定，原为正向）：摩擦轮"正转"是另一个物理旋向。
          * 反馈与输出**成对**取反（= 重定义正方向，闭环仍是负反馈）；只反一个会变成正反馈。 */
-        .motor_direction = DRVLIB_MOTOR_DIRECTION_REVERSE,    // 输出方向
-        .feedback_direction = DRVLIB_MOTOR_DIRECTION_REVERSE, // 反馈方向
-        .position_mode = DRVLIB_MOTOR_POS_CONTINUOUS,         // 不用位置环（连续模式，不引入限幅）
+        .motor_direction = LIB_MOTOR_DIRECTION_REVERSE,    // 输出方向
+        .feedback_direction = LIB_MOTOR_DIRECTION_REVERSE, // 反馈方向
+        .position_mode = LIB_MOTOR_POS_CONTINUOUS,         // 不用位置环（连续模式，不引入限幅）
         .angle_limit_max = 0,
         .angle_limit_min = 0,
         .position_span = 6.2831853f, // 单圈 2π（M3508 编码器跨度）
         .position_offset = 0,
-        .lpf_enable = DRVLIB_MOTOR_LPF_ENABLE, // 速度/电流低通
+        .lpf_enable = LIB_MOTOR_LPF_ENABLE, // 速度/电流低通
         /* 速度低通 20 ms → 5 ms（2026-10-11）：弹丸过轮的负载实测是 **~78 ms 的长浅凹陷**，20 ms
          * 一阶低通意味着环路要等 20~40 ms 才"看见"掉速、最该补电流的那一段全在滞后里。降到 5 ms
          * 后环路 5~10 ms 内响应；穿越处相位滞后（kp=0.2 对应 τ_cl≈40 ms、≈4 Hz）只有 ~7°，
          * 不动稳定性。代价是反馈噪声抬高（原始转速逐拍 ±5%），经 kp=0.2 折算成电流纹波 ≈±0.7 A，
          * 可接受。⚠ 观测通道 CH20/CH21 取的是 drv 原始量，本来就绕过低通，不受本值影响。 */
         .lpf_rc = 0.005f,
-        .angle_feedforward_src = DRVLIB_MOTOR_FF_DISABLE, // 前馈来源
-        .speed_feedforward_src = DRVLIB_MOTOR_FF_DISABLE,
-        .current_feedforward_src = DRVLIB_MOTOR_FF_DISABLE,
+        .angle_feedforward_src = LIB_MOTOR_FF_DISABLE, // 前馈来源
+        .speed_feedforward_src = LIB_MOTOR_FF_DISABLE,
+        .current_feedforward_src = LIB_MOTOR_FF_DISABLE,
         .angle_feedforward_ptr = NULL, // 前馈指针
         .speed_feedforward_ptr = NULL,
         .current_feedforward_ptr = NULL,
         .pid =
             {
-                [DRVLIB_MOTOR_STAGE_SPEED] =
+                [LIB_MOTOR_STAGE_SPEED] =
                     {
                         /* kp=0.2：去饱和后的闭环时间常数 τ_cl 基本由 kp 决定。实测 kp=0.1 时
                          * τ_cl≈78 ms（≈12.8 rad/s 带宽），而速度 LPF 极点（现 5 ms → 200 rad/s）远在
@@ -319,9 +319,9 @@ void AppShootInit(void)
             },
         .dt_max = 0.01f, // 单帧 dt 上限 (s)
     };
-    BSP_ASSERT_APP_CALL(DrvlibMotorConfig(&friction_motor_ctrl, &friction_motor_ctrl_cfg));
+    BSP_ASSERT_APP_CALL(LibMotorConfig(&friction_motor_ctrl, &friction_motor_ctrl_cfg));
 
-    DrvlibMotorEnable(&friction_motor_ctrl);
+    LibMotorEnable(&friction_motor_ctrl);
 
     // 拨弹电机：注册 CAN 实例并挂入广播组
     BSP_ASSERT_APP_CALL(DrvDJIMotorBroadcastRegister(&trigger_motor));
@@ -342,24 +342,24 @@ void AppShootInit(void)
      * 轨迹 velocity 经 angle_feedforward_ptr 前馈进外环（量纲 = 外环输出 = 速度设定值 rad/s，正好）。
      * 位置模式用 CONTINUOUS：轨迹是**多圈绝对角**，不能 WRAP、也不设限位。
      * 摩擦/加速度前馈按计划留到下一轮（speed/current 两路仍 DISABLE，speed 指针先挂着备接）。 */
-    DrvlibMotor_Config_s trigger_motor_ctrl_cfg = {
-        .loop_type = DRVLIB_MOTOR_LOOP_ANGLE | DRVLIB_MOTOR_LOOP_SPEED, // 位置环 + 速度环
+    LibMotor_Config_s trigger_motor_ctrl_cfg = {
+        .loop_type = LIB_MOTOR_LOOP_ANGLE | LIB_MOTOR_LOOP_SPEED, // 位置环 + 速度环
         /* 安装方向（2026-10-10 看实机定）：拨盘"正转"是另一个物理旋向。与摩擦轮同一套 ——
          * 反馈与输出**成对**取反（= 重定义正方向，闭环仍是负反馈）；只反一个会变成正反馈。 */
-        .motor_direction = DRVLIB_MOTOR_DIRECTION_REVERSE,    // 输出方向
-        .feedback_direction = DRVLIB_MOTOR_DIRECTION_REVERSE, // 反馈方向
-        .position_mode = DRVLIB_MOTOR_POS_CONTINUOUS,         // 多圈绝对角，不限幅不归一化
+        .motor_direction = LIB_MOTOR_DIRECTION_REVERSE,    // 输出方向
+        .feedback_direction = LIB_MOTOR_DIRECTION_REVERSE, // 反馈方向
+        .position_mode = LIB_MOTOR_POS_CONTINUOUS,         // 多圈绝对角，不限幅不归一化
         .angle_limit_min = 0,
         .angle_limit_max = 0,
         .position_span = 6.2831853f, // 单圈 2π（M3508 编码器跨度），用于多圈累加
         .position_offset = 0,
-        .lpf_enable = DRVLIB_MOTOR_LPF_ENABLE, // 速度/电流低通
+        .lpf_enable = LIB_MOTOR_LPF_ENABLE, // 速度/电流低通
         /* 速度低通 TRIGGER_SPEED_LPF_RC（20 → 5 → 3 ms）：这是环路里最大的一处相位滞后，
          * 每次要提 TRIGGER_SPEED_KP 都得先从这里把相位还回来。取值与理由见宏定义处。 */
         .lpf_rc = TRIGGER_SPEED_LPF_RC,
-        .angle_feedforward_src = DRVLIB_MOTOR_FF_EXTERNAL, // 外环前馈 = 轨迹速度 (rad/s)
-        .speed_feedforward_src = DRVLIB_MOTOR_FF_EXTERNAL, // 摩擦前馈（库仑 + 起步一两拍的突破项）
-        .current_feedforward_src = DRVLIB_MOTOR_FF_DISABLE,
+        .angle_feedforward_src = LIB_MOTOR_FF_EXTERNAL, // 外环前馈 = 轨迹速度 (rad/s)
+        .speed_feedforward_src = LIB_MOTOR_FF_EXTERNAL, // 摩擦前馈（库仑 + 起步一两拍的突破项）
+        .current_feedforward_src = LIB_MOTOR_FF_DISABLE,
         .angle_feedforward_ptr = &trigger_angle_ff,
         .speed_feedforward_ptr = &trigger_friction_ff,
         .current_feedforward_ptr = NULL,
@@ -367,7 +367,7 @@ void AppShootInit(void)
             {
                 /* 位置环（最外）：只上 P，输出 = 速度设定值 (rad/s)。限幅 TRIGGER_ANGLE_VMAX
                  * 必须 > 轨迹 vmax，否则速度前馈占满权限、比例项无法纠偏（见宏定义处说明）。 */
-                [DRVLIB_MOTOR_STAGE_ANGLE] =
+                [LIB_MOTOR_STAGE_ANGLE] =
                     {
                         .kp = TRIGGER_ANGLE_KP,                  // 比例系数 (1/s)
                         .ki = 0,                                 // 首轮空载不接积分（按计划下一轮再上）
@@ -378,7 +378,7 @@ void AppShootInit(void)
                         .config_mask = PID_ENABLE_TRAPEZOID_INTEGRAL | PID_ENABLE_OUTPUT_LIMIT | PID_ENABLE_INTEGRAL_LIMIT,
                     },
                 // 速度环：与摩擦轮同一套算法（变速积分 + 输出/积分限幅），量纲按拨盘
-                [DRVLIB_MOTOR_STAGE_SPEED] =
+                [LIB_MOTOR_STAGE_SPEED] =
                     {
                         /* kp = TRIGGER_SPEED_KP，2026-10-11 由 0.08 提到 0.2（用户："把拨盘的
                          * 位置速度环调硬"）。旧值 0.08 的来历与代价（2026-10-10 开环力矩档实测）：
@@ -409,9 +409,9 @@ void AppShootInit(void)
             },
         .dt_max = 0.01f, // 单帧 dt 上限 (s)
     };
-    BSP_ASSERT_APP_CALL(DrvlibMotorConfig(&trigger_motor_ctrl, &trigger_motor_ctrl_cfg));
+    BSP_ASSERT_APP_CALL(LibMotorConfig(&trigger_motor_ctrl, &trigger_motor_ctrl_cfg));
 
-    DrvlibMotorEnable(&trigger_motor_ctrl);
+    LibMotorEnable(&trigger_motor_ctrl);
 
     // 拨弹状态机：初始「关」（ch7 断开）。Start 会跑一次「关」的进入动作（置 plan_request）
     LibFsmTableConfig_s trigger_fsm_cfg = {
@@ -489,19 +489,19 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
                 friction_motor_setref = 0.0f;
             }
         }
-        DrvlibMotorFeedback_s friction_fb = {
+        LibMotorFeedback_s friction_fb = {
             .position = fm.position,
             .speed = fm.speed,
             .current = fm.current,
             .timestamp_us = fm.timestamp_us,
         };
-        friction_out = DrvlibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, friction_dt_s);
+        friction_out = LibMotorSetRef(&friction_motor_ctrl, friction_motor_setref, &friction_fb, friction_dt_s);
         DrvDJIMotorBroadcastSetRef(&friction_motor, friction_out);
     }
     else // disable：0 电流自由滑行
     {
         friction_motor_setref = 0.0f;
-        DrvlibMotorReset(&friction_motor_ctrl); // 清 PID（含积分）与 LPF 状态，不动 enable 标志
+        LibMotorReset(&friction_motor_ctrl); // 清 PID（含积分）与 LPF 状态，不动 enable 标志
         DrvDJIMotorBroadcastSetRef(&friction_motor, 0.0f);
     }
 #endif
@@ -708,7 +708,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
 
     if (!drive && trigger_active) // 驱动 → 空闲的退出沿：清一次 PID，避免上一轮的积分残留带过来
     {
-        DrvlibMotorReset(&trigger_motor_ctrl);
+        LibMotorReset(&trigger_motor_ctrl);
     }
     trigger_active = drive;
 
@@ -772,13 +772,13 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
         {
             trigger_ref = (float)trigger_motor_ctrl.data.position;
         }
-        DrvlibMotorFeedback_s trigger_fb = {
+        LibMotorFeedback_s trigger_fb = {
             .position = t.position,
             .speed = t.speed,
             .current = t.current,
             .timestamp_us = t.timestamp_us,
         };
-        trigger_out = DrvlibMotorSetRef(&trigger_motor_ctrl, trigger_ref, &trigger_fb, trigger_dt_s);
+        trigger_out = LibMotorSetRef(&trigger_motor_ctrl, trigger_ref, &trigger_fb, trigger_dt_s);
     }
 #endif
 
@@ -804,8 +804,8 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
         {
             stuck_cut = 1;
             trigger_stuck_hold_ms = 0.0f;
-            trigger_out = 0.0f;                                            // 真卡死：本拍切断，下拍环路重来
-            trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out = 0.0f; // 这份储能不脱困也用不上了，一并清掉
+            trigger_out = 0.0f;                                         // 真卡死：本拍切断，下拍环路重来
+            trigger_motor_ctrl.pid[LIB_MOTOR_STAGE_SPEED].i_out = 0.0f; // 这份储能不脱困也用不上了，一并清掉
         }
     }
     else
@@ -814,7 +814,7 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     }
     if (trigger_stuck && !stuck_now)
     {
-        trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out = 0.0f; // 脱困沿：清掉"爬到突破值"的储能
+        trigger_motor_ctrl.pid[LIB_MOTOR_STAGE_SPEED].i_out = 0.0f; // 脱困沿：清掉"爬到突破值"的储能
     }
     trigger_stuck = stuck_now; // stuck_now 已含 drive（非驱动拍恒 0），脱困沿只在一条轨迹内部成立
 #if !SHOOT_VOFA_ENABLE
@@ -894,19 +894,19 @@ ITCM_RAM void AppShootRun(float dt, uint64_t time_stamp)
     VofaSetChannel(11, (float)((shoot_friction_spin_e == shoot_cmd2shoot_data.friction_mode) && TriggerFsmFireActive(shoot_cmd2shoot_data.fire_mode)));
     VofaSetChannel(12, t.speed); // 原始反馈转速 (rad/s)，电机极性
     /* CH13~CH19：控制核内部量（app 正向域，见上面极性说明）。空闲拍仍照发，便于看停机后的残值 */
-    VofaSetChannel(13, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].p_out);
-    VofaSetChannel(14, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out);
+    VofaSetChannel(13, trigger_motor_ctrl.pid[LIB_MOTOR_STAGE_SPEED].p_out);
+    VofaSetChannel(14, trigger_motor_ctrl.pid[LIB_MOTOR_STAGE_SPEED].i_out);
     VofaSetChannel(15, (float)(stuck_now ? (stuck_cut ? 2 : 1) : 0));
-    VofaSetChannel(16, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_ANGLE].output);
-    VofaSetChannel(17, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_ANGLE].p_out);
-    VofaSetChannel(18, trigger_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].error);
+    VofaSetChannel(16, trigger_motor_ctrl.pid[LIB_MOTOR_STAGE_ANGLE].output);
+    VofaSetChannel(17, trigger_motor_ctrl.pid[LIB_MOTOR_STAGE_ANGLE].p_out);
+    VofaSetChannel(18, trigger_motor_ctrl.pid[LIB_MOTOR_STAGE_SPEED].error);
     VofaSetChannel(19, trigger_friction_ff);
     /* CH20~CH25：摩擦轮（判弹丸过轮，见上面通道表）。空闲拍仍照发，便于看停机后的残值 */
-    VofaSetChannel(20, -fm.speed);                                               // 实测转速 (rad/s, app 正向, 未低通)
-    VofaSetChannel(21, -fm.current);                                             // 实测电流 (A, app 正向, 未低通)
-    VofaSetChannel(22, friction_out);                                            // 速度环输出 = 实下发 (A)
-    VofaSetChannel(23, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].i_out); // 速度环 I 项 (A)
-    VofaSetChannel(24, friction_motor_ctrl.pid[DRVLIB_MOTOR_STAGE_SPEED].error); // 速度误差 (rad/s)
+    VofaSetChannel(20, -fm.speed);                                            // 实测转速 (rad/s, app 正向, 未低通)
+    VofaSetChannel(21, -fm.current);                                          // 实测电流 (A, app 正向, 未低通)
+    VofaSetChannel(22, friction_out);                                         // 速度环输出 = 实下发 (A)
+    VofaSetChannel(23, friction_motor_ctrl.pid[LIB_MOTOR_STAGE_SPEED].i_out); // 速度环 I 项 (A)
+    VofaSetChannel(24, friction_motor_ctrl.pid[LIB_MOTOR_STAGE_SPEED].error); // 速度误差 (rad/s)
     VofaSetChannel(25, (float)((shoot_friction_disable_e != shoot_cmd2shoot_data.friction_mode) && (fm.timestamp_us != 0))); // 使能(含减速)且在线
     VofaSend();
 #endif // SHOOT_VOFA_ENABLE
