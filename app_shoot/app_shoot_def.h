@@ -241,7 +241,7 @@
  *   —— 那个宏保留着（见文件末尾），届时要先确认 FRICTION_REDUCTION 的机械口径。
  * 证据：ignore/vofa+.csv（60000 点 / 120.7 s / 25 通道），复现脚本
  *   lib/lib_motor/tools/analyze_trigger_spin.py。 */
-#define FRICTION_SPEED_FULL 400.0f
+#define FRICTION_SPEED_FULL 600.0f
 
 /* 过洞放行阈值 (rad/s)：摩擦轮转速低于此值时，shoot 向 cmd 回报
  * shoot_friction_speed_low_e，cmd 才把 hole 真正下发给云台（见 app_cmd.c 的

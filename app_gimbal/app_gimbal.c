@@ -400,9 +400,9 @@ void AppGimbalInit(void)
     AxisPidLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
-        .vofa_base_ch = 1,
-        .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
+        // .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
+        // .vofa_base_ch = 1,
+        // .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
         .params =
             {
                 .gravity = 0.389f, // 重力前馈系数（标定 0.28→0.30）
@@ -518,13 +518,14 @@ void AppGimbalInit(void)
     AxisPidLite_Init_Config_s yaw_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        // .vofa_enable = 1,
-        // .vofa_base_ch = 1,
+        .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
+        .vofa_base_ch = 1,
+        .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
         .params =
             {
                 .gravity = 0.0f,
                 .gear_ratio = 1,
-                .inertia = 0.0095f,
+                .inertia = 0.015f,
                 .friction_coulomb_pos = 0.0f,
                 .friction_coulomb_neg = 0.0f,
                 .friction_viscous_pos = 0.0f,
@@ -532,7 +533,7 @@ void AppGimbalInit(void)
             }, // 轴参数
         .sine_params =
             {
-                .amplitude = 0.4f,
+                .amplitude = 0.2f,
                 .freq = 2,
             }, // 正弦参数
         .chirp_params =
@@ -553,11 +554,45 @@ void AppGimbalInit(void)
          * 两环只开 P（ki/kd=0），与 MIT 的 PD 严格等效。 */
         .pos_pid =
             {
-                .kp = 6.25f, // 位置环 (rad/s)/rad，输出为速度设定值；等效刚度 6.25*0.8=5
+                .kp = 12, // 位置环 (rad/s)/rad，输出为速度设定值；等效刚度 6.25*0.8=5
             },
+        /* 速度环整定依据（ig/0.8_0.csv / ig/0.8_6.25.csv，TUNE 2 Hz 正弦，幅值 0.2 rad）：
+         *   pos_kp=0 时实测 T=speed/ref_vel=0.965(-0.31 dB)、相位 +1.8°；
+         *   纯 P 已把 2 Hz 基频误差压到 4.6%。用指令力矩 I18（I3 反馈有约 0.53 倍
+         *   缩放和 ~31 ms 延迟，只适合看趋势）反推被控对象 1/(J s + b)：
+         *   J≈0.0138、b≈0.035；前馈 J=0.015 基本匹配，预测 T=0.964∠1.5°，
+         *   与实测吻合，说明 2 Hz 误差主要来自残余阻尼。
+         *   - kp 保持 0.8：增益穿越 kp/J≈58 rad/s(9.2 Hz)，被控对象近似一阶，
+         *     相位裕度约 90°，当前没有振荡迹象。先不加 kp，避免把 6/10 Hz
+         *     机械非线性（3 次/5 次谐波）也一起放大。
+         *   - ki=2：取 kp*b/J=0.8*0.035/0.0138≈2.0，使积分零点 ki/kp≈2.5 rad/s
+         *     正好抵消被控对象极点 b/J≈2.5 rad/s(0.4 Hz)。速度环因此近似一阶，
+         *     低频/常值摩擦误差积分到 0；2 Hz 处积分只改变误差相位，误差幅值
+         *     4.47%→4.56%（可忽略），不会恶化正弦跟踪。
+         *   - 积分限幅 0.2 Nm：yaw 无重力，2 Hz 最大速度下等效阻尼力矩约
+         *     0.035*2.4≈0.084 Nm，0.2 给静摩擦留余量；若慢速保持测试里 i_out
+         *     长时间饱和且仍有残差，再放宽到 0.25~0.3。
+         *   - 变速积分：|e|≤0.1 rad/s 全积分（稳态用），0.1~0.4 rad/s 线性减弱，
+         *     >0.4 rad/s 停止积分，防止启动/阶跃/视觉跳变时积分饱和造成过冲。
+         *   - 梯形积分：500 Hz 下减小采样积分偏差。 */
         .vel_pid =
             {
-                .kp = 0.8f, // 速度环 Nm/(rad/s)，等效阻尼
+                .kp = 1.2f,                      // 比例系数 Nm/(rad/s)
+                .ki = 2.0f,                      // 积分系数 Nm/(rad/s·s)
+                .kd = 0,                         // 微分系数
+                .integral_limit = 0.2f,          // 积分限幅阈值 (Nm)
+                .coef_a = 0.3f,                  // 变速积分参数 A (rad/s)：0.1~0.4 线性减弱
+                .coef_b = 0.1f,                  // 变速积分参数 B (rad/s)：|e|≤0.1 全积分
+                .d_lpf_rc = 0,                   // 微分滤波时间常数 RC (0 = 禁用)
+                .out_lpf_rc = 0,                 // 输出滤波时间常数 RC (0 = 禁用)
+                .deadband = 0,                   // 死区范围 (0 = 禁用)
+                .error_normalize_range = 0,      // 误差归一化范围 (0 = 禁用, 需要 PID_ENABLE_ERROR_NORMALIZE)
+                .out_max = 0,                    // 输出上限 (需要 PID_ENABLE_OUTPUT_LIMIT)
+                .out_min = 0,                    // 输出下限 (需要 PID_ENABLE_OUTPUT_LIMIT)
+                .config_mask =                   // 功能配置掩码
+                PID_ENABLE_INTEGRAL_LIMIT |      // 启用积分限幅
+                PID_ENABLE_TRAPEZOID_INTEGRAL |  // 启用梯形积分
+                PID_ENABLE_CHANGING_INTEGRATION, // 启用变速积分
             },
         // yaw 是 WRAP 环绕轴（±π 归一化）：误差需取最短路径，否则边界处跳变
         .error_normalize_range = 2.0f * M_PI, // 误差 wrap 到 [-π, π)
