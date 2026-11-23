@@ -87,6 +87,15 @@ static const BMI088_Calib_s s_bmi088_calib = {
     // .acc = { .bias = {...}, .scale = {...}, .misalign = {...} },  // 六位置标定后填
 };
 
+/* IMU 安装俯仰偏置 (rad)：云台基座水平时 euler.pitch 的读数。
+ * IMU 的 y 轴与云台基座 y 轴重合（基座系：前 x / 左 y / 上 z），所以安装只是绕基座 y 的
+ * 纯俯仰转动，基座世界系 pitch = euler.pitch - 本偏置（ZYX 约定，正=低头）。
+ * ⚠ 实测值，换 IMU / 拆装 / 改安装后必须重测：基座置于水平台面，静置读 euler.pitch
+ *   （VOFA CH2 或终端），填回这里。
+ * ⚠ 该换算把 roll 的二阶交叉项略掉了：roll≈2° 时误差 <0.01°，可忽略；
+ *   若将来基座会出现大 roll（>10°），需改用 R_base = R_imu·Ry(-偏置) 的完整矩阵解算。 */
+#define GIMBAL_IMU_MOUNT_PITCH 0.266f
+
 static cmd2gimbal_data_t gimbal_cmd2gimbal_data; // cmd2gimbal
 
 // 数据
@@ -400,9 +409,10 @@ void AppGimbalInit(void)
     AxisPidLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        // .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
-        // .vofa_base_ch = 1,
-        // .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
+        .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
+        .vofa_base_ch = 1,
+        .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
+        .vofa_pos_pid_base_ch = 19, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
         .params =
             {
                 .gravity = 0.389f, // 重力前馈系数（标定 0.28→0.30）
@@ -437,10 +447,24 @@ void AppGimbalInit(void)
          *     = (pos_kp*vel_kp)*(ref-pos) + vel_kp*(ref_vel-speed) + ff
          * 原 MIT 整定 kp=10 / kd=0.4，取 vel_kp=0.4、pos_kp=25 即等效（刚度 25*0.4=10）。
          * 电机延迟 8.6ms 限定 kp 上限：kp=80 必振荡(16Hz位置环极限环)，
-         * kp=40 总滞后140°裕度30°。两环只开 P（ki/kd=0），与 MIT 的 PD 严格等效。 */
+         * kp=40 总滞后140°裕度30°。两环只开 P（ki/kd=0），与 MIT 的 PD 严格等效。
+         *
+         * 2026-11-10 发弹数据（ig/vofa+.csv，pitchup）复盘：
+         *   发弹段 1.45~4.3s 位置误差 RMS 0.0171 rad、峰值 ±0.049 rad，
+         *   速度/力矩主频 5.02 Hz；发弹后 4.5~8.2s 误差 RMS 0.0072 rad，
+         *   主频 5.69 Hz。I4 参考是约 110 Hz 的阶梯（0.5s 内约 55 次跳变，
+         *   单步最大 0.021 rad），而 I6 加速度≈0、I5 速度 RMS 仅 0.049 rad/s；
+         *   轴速度 RMS 与参考跳变幅值的相关系数 0.956 —— 5~6 Hz 振铃主要是
+         *   位置环在追阶梯参考，不是积分饱和（i_out 最大 0.107 < 0.25），
+         *   也不是稳态误差（perr 均值≈0）。5 Hz 处实测位置环开环增益只有
+         *   0.65~0.80（|L|<1），不是线性发散。
+         *   因此 pos_kp 35→25：减小对参考跳变/高频噪声的响应，代价是 1.5 Hz
+         *   跟踪滞后略增；刚度 25*0.55≈13.75 仍高于原 MIT 的 kp=10。
+         *   vel_kp 保持 0.55（PM≈38°，已接近上限），ki=2、限幅 0.25 不动。
+         *   根治应把视觉/规划器参考先平滑（LPF/插值）再送进位置环。 */
         .pos_pid =
             {
-                .kp = 35,                   // 比例系数
+                .kp = 25,                   // 比例系数（35→25，抑制追参考阶梯引起的 5~6Hz 振铃）
                 .ki = 0,                    // 积分系数
                 .kd = 0,                    // 微分系数
                 .integral_limit = 0,        // 积分限幅阈值 (0 = 禁用)
@@ -518,9 +542,9 @@ void AppGimbalInit(void)
     AxisPidLite_Init_Config_s yaw_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
-        .vofa_base_ch = 1,
-        .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
+        // .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
+        // .vofa_base_ch = 1,
+        // .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
         .params =
             {
                 .gravity = 0.0f,
@@ -752,6 +776,21 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
     BMI088KalmanUpdate(&bmi088);
     BMI088Kalman_Data_t imu_data = BMI088KalmanGetData(&bmi088);
 
+    /* 云台基座（= yaw 轴输出、两个 pitch 关节的上游）的世界系 pitch，正=低头。
+     * IMU 刚性固定在基座上，扣掉安装偏置即基座姿态；chassis 俯仰/悬挂起伏都包含在内。 */
+    const float base_pitch = imu_data.euler.pitch - GIMBAL_IMU_MOUNT_PITCH;
+    /* 基座世界系 pitch 角速度 (rad/s)：ZYX 下 θ̇ = cosφ·q − sinφ·r，小 roll 时 ≈ 机体系 y 轴
+     * 角速度。IMU 只是绕基座 y 轴装偏了一个俯仰角，y 轴角速度在基座系/IMU 系相同。 */
+    const float base_pitch_rate = imu_data.gyro[1];
+
+    /* 上 pitch 的世界系指向/角速度 —— 对 cmd 和视觉统一用世界系（ZYX 符号，正=低头）。
+     *   p = pitchup_pos - PITCH_POS_ZERO_OFFSET（相对基座、向上为正）
+     *   pitch_world = base_pitch - p                 （世界系，正=低头）
+     *   pitch_vel   = base_pitch_rate - ṗ，ṗ = 上电机角速度 - 下电机角速度
+     * 外部（cmd/视觉）不再拿到关节坐标，所有基座相对坐标只在本文件内部出现。 */
+    const float pitch_world = base_pitch - (pitchup_pos - PITCH_POS_ZERO_OFFSET);
+    const float pitch_vel_world = base_pitch_rate - (float)(pitchup_ctrl.data.speed - pitchdown_ctrl.data.speed);
+
     /* ---- yaw 轴反馈：取自 IMU（世界系），不用电机编码器 ----
      * IMU 刚性固定在云台底座（yaw 轴输出、两个 pitch 关节的上游）：
      *   ① 两个 pitch 轴怎么转都带不动 IMU，只有 yaw 轴转动会改变它的姿态；
@@ -904,10 +943,24 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         AxisLiteRef_s pitchup_ref;
         if (pitchup_use_cmd)
         {
-            // 立起/直立：外部设定值来自 cmd（含规划器给的 v/a）
-            pitchup_ref.position = gimbal_cmd2gimbal_data.pitch_x;
-            pitchup_ref.speed = gimbal_cmd2gimbal_data.pitch_v;
-            pitchup_ref.acceleration = gimbal_cmd2gimbal_data.pitch_a;
+            /* 立起/直立：cmd 给的是**世界系**上 pitch（正=低头），这里换算成关节坐标。
+             *   p = base_pitch - pitch_world（相对基座、向上为正），在基座相对坐标里限位
+             *       （机械限位本来就是相对基座的），再加内部零位偏置；
+             *   关节角速度 = 基座角速度 - 世界系角速度（x = p + 零位 ⇒ ẋ = ṗ）；
+             *   基座角加速度没有可靠测量，加速度前馈直接取反（坡道变化时由位置环补）。 */
+            const float pitch_p_raw = base_pitch - gimbal_cmd2gimbal_data.pitch_x;
+            const float pitch_p_cmd = Lib_Math_Clamp(pitch_p_raw, PITCH_POS_LIMIT_MIN, PITCH_POS_LIMIT_MAX);
+            pitchup_ref.position = pitch_p_cmd + PITCH_POS_ZERO_OFFSET;
+            pitchup_ref.speed = base_pitch_rate - gimbal_cmd2gimbal_data.pitch_v;
+            pitchup_ref.acceleration = -gimbal_cmd2gimbal_data.pitch_a;
+            /* 顶到限位且前馈仍朝界外：清零，避免持续顶死机械限位（与规划器 LIMITED 一致） */
+            if ((pitch_p_raw != pitch_p_cmd) &&
+                (((pitch_p_raw > pitch_p_cmd) && (pitchup_ref.speed > 0.0f)) ||
+                 ((pitch_p_raw < pitch_p_cmd) && (pitchup_ref.speed < 0.0f))))
+            {
+                pitchup_ref.speed = 0.0f;
+                pitchup_ref.acceleration = 0.0f;
+            }
         }
         else
         {
@@ -951,6 +1004,8 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
     DrvRSMotorSend(&yaw_motor);
 
     /* 回传云台反馈给 cmd（规划器需要当前位置/速度；pitch_down 供视觉回传下pitch位姿角）。
+     * pitch 回传的是**世界系**上 pitch 指向/角速度（已含基座倾角），cmd 拿到直接用，
+     * 不再持有关节坐标；基座相对角只在上面的 pitchup_ref 换算里出现。
      * yaw 与 yaw_vel 回传的是 IMU 世界系量：必须与上面 yaw 轴控制用的反馈同源，
      * 否则 cmd 的规划器会拿"相对底盘"的锚点去规划"世界系"的目标，每帧都差一个底盘航向。
      * 同时视觉下发的 yaw 本就是世界系（见 app_cmd send_gimbal 的视觉分支），回传也对齐。
@@ -961,8 +1016,8 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      *   （底盘一转它就变，目标角播种/向量旋转都会错）。 */
     gimbal2cmd_data_t gimbal2cmd_data = {
         .state = gimbal_state, // 云台实际姿态（cmd 可拿去判"云台到没到位/在不在动作中"）
-        .pitch_position = pitchup_pos,
-        .pitch_vel = pitchup_ctrl.data.speed,
+        .pitch_world = pitch_world,
+        .pitch_vel = pitch_vel_world,
         .yaw_position = imu_data.euler.yaw,
         .yaw_vel = imu_data.yaw_rate,
         .pitch_down_position = pitchdown_pos,

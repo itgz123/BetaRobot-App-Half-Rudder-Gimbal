@@ -12,6 +12,16 @@
 #define pitchdown_position_max 1.0266802310943604f     // 直立
 #define pitchdown_position_min -0.0045540332794189453f // 倒下
 
+/* 上 pitch 关节限位，**相对云台基座**：p 向上为正，0 = 上 pitch 水平（下 pitch 直立）。
+ * 机械限位本来就是相对基座的，世界系目标必须先在 gimbal 侧扣掉基座倾角再限幅。 */
+#define PITCH_POS_LIMIT_MIN (pitchup_position_1 - pitchup_position_2)
+#define PITCH_POS_LIMIT_MAX (pitchup_position_3 - pitchup_position_2)
+
+/* 内部上 pitch 坐标与基座相对角 p 的零位偏置。
+ * app_gimbal 的关节坐标 x = (u - U0) - (d - Dmin)，在"下 pitch 直立、上 pitch 水平"时
+ * 不是 0，而是本偏置（≈ -0.0912 rad）；即 x = p + PITCH_POS_ZERO_OFFSET。 */
+#define PITCH_POS_ZERO_OFFSET ((pitchup_position_2 - pitchup_position_0) - (pitchdown_position_max - pitchdown_position_min))
+
 // gimbal速度(rad/s)，加速度(rad/s^2)
 #define pitch_speed 3.0f
 #define pitch_acceleration 10.0f

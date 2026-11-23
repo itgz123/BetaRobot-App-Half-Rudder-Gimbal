@@ -48,8 +48,10 @@ typedef enum : uint8_t
 
 /* 接收帧（视觉→板）：payload 48B，线协议帧 = 结构体 + CRC16(2B) = 50B。
  * 对应视觉端结构体 StandardSendRobotCmdData（字段顺序/类型逐一对齐）。
- * 字段名使用机器人内部统一语义：线协议裸字段 pitch/target_pitch/v_pitch/a_pitch
- * 均解释为"上 pitch 相对云台基座"（base-relative）。 */
+ * 字段名使用机器人内部统一语义：线协议裸字段 pitch/target_pitch 解释为**世界系**
+ * 上 pitch 指向（视觉做世界系解算需要基座姿态）；板侧原样下发给 gimbal，
+ * 由 gimbal 换算成"相对云台基座"的关节角并在基座相对坐标里限幅。
+ * v_pitch/a_pitch 实测是"向上为正"（与位置字段镜像），板侧取负换成世界系 ZYX 符号。 */
 typedef struct
 {
     vision_cmd_e cmd_ID;        /* 帧定界命令字（= VISUAL_CMD_RX） */
@@ -58,27 +60,29 @@ typedef struct
     uint8_t shoot_rate;         /* 发射速率档（视觉端默认 3） */
     /* 单位约定：yaw/pitch_base_relative/target_yaw/target_pitch_base_relative 为 deg；
      * v_yaw/v_pitch_base_relative 为 rad/s；a_yaw/a_pitch_base_relative 为 rad/s² */
-    /* 符号约定：pitch 位置字段在线上是“向上为负”（视觉约定），本板内部统一“向上为正”。
-     * 注意：实测视觉发送的 v_pitch/a_pitch 与该位置字段不是同一镜像（v/a 与内部正方向
-     * 同号），故位置取反、v/a 不取反。符号与零位转换只在 app_cmd.c 的视觉收发分支做，
-     * 业务层看到的是内部坐标。 */
+    /* 符号约定：pitch 位置字段在线上是“向上为负”（视觉约定），与 ZYX 欧拉 pitch
+     * 同号（正=低头），板侧/云台内部统一用这个世界系符号。
+     * 注意：实测视觉发送的 v_pitch/a_pitch 与位置字段是**镜像**（v/a 向上为正），
+     * 故板侧对 v/a 取负后再用；速度已是世界系量，gimbal 再加基座角速度换算到关节。 */
     float yaw;                        /* 视觉给出的世界系 yaw（视觉端 yaw，deg） */
-    float pitch_base_relative;        /* 视觉给出的总体 pitch：上 pitch 相对云台基座（视觉端 pitch，deg；向上为负） */
+    float pitch_base_relative;        /* 视觉给出的**世界系**上 pitch 指向（视觉端 pitch，deg；向上为负）。
+                                       * 字段名沿用旧名，线协议字节不变 */
     float target_yaw;                 /* 视觉预测的目标世界系 yaw（视觉端 target_yaw，deg） */
-    float target_pitch_base_relative; /* 视觉预测的目标总体 pitch：上 pitch 相对云台基座（视觉端 target_pitch，deg；向上为负） */
+    float target_pitch_base_relative; /* 视觉预测的目标世界系 pitch（视觉端 target_pitch，deg；向上为负） */
     float enable_yaw_diff;            /* 是否发弹。0:不发弹；1:发弹（连发） */
     float enable_pitch_diff;          /* 弹频。1:每秒2发；2:每秒4发；3:每秒6发 */
     float v_yaw;                      /* yaw 角速度前馈（视觉端 v_yaw，rad/s） */
-    float v_pitch_base_relative;      /* base-relative pitch 角速度前馈（视觉端 v_pitch，rad/s） */
+    float v_pitch_base_relative;      /* 世界系 pitch 角速度前馈（视觉端 v_pitch，rad/s；向上为正） */
     float a_yaw;                      /* yaw 角加速度前馈（视觉端 a_yaw，rad/s²） */
-    float a_pitch_base_relative;      /* base-relative pitch 角加速度前馈（视觉端 a_pitch，rad/s²） */
+    float a_pitch_base_relative;      /* 世界系 pitch 角加速度前馈（视觉端 a_pitch，rad/s²；向上为正） */
     enemy_color_e detect_color;       /* 检测到的敌方颜色（视觉端 detect_color：0 red / 1 blue） */
 } vision_recv_t;
 
 /* 发送帧（板→视觉）：payload 55B，线协议帧 = 结构体 + CRC16(2B) = 57B。
  * 对应视觉端结构体 ReceiveRobotData（字段顺序/类型逐一对齐）。
- * 字段名使用机器人内部统一语义：线协议裸字段 pitch/pitch_vel 解释为
- * "上 pitch 相对云台基座"（base-relative）；aim_color 对应视觉端 enemy_color。 */
+ * 字段名使用机器人内部统一语义：线协议裸字段 pitch 解释为**世界系**上 pitch 指向
+ * （已含云台基座姿态）；pitch_vel 也是世界系角速度，按视觉约定"向上为正"发送。
+ * aim_color 对应视觉端 enemy_color。 */
 typedef struct
 {
     vision_cmd_e cmd_ID; /* 帧定界命令字（= VISUAL_CMD_TX） */
@@ -86,14 +90,15 @@ typedef struct
     vision_mode_e mode;  /* 工作模式（视觉端 mode：0 IDLE / 1 AUTO_AIM / 2 SMALL_BUFF / 3 BIG_BUFF） */
     /* 单位约定：yaw/pitch_base_relative/pitch_down/roll 为 deg；
      * yaw_vel/pitch_base_relative_vel/roll_vel 为 rad/s；
-     * 符号约定：pitch_base_relative 用视觉约定“向上为负”（内部向上为正，app_cmd.c 发送前转换）；
+     * 符号约定：pitch_base_relative 用视觉约定“向上为负”（与 ZYX 欧拉 pitch 同号）；
      * v_x/v_y/v_z、bullet_speed 为 m/s */
     float yaw;                     /* 发给视觉的世界系 yaw（视觉端 yaw，deg） */
-    float pitch_base_relative;     /* 发给视觉的总体 pitch：上 pitch 相对云台基座（视觉端 pitch，deg） */
+    float pitch_base_relative;     /* 发给视觉的**世界系**上 pitch 指向（视觉端 pitch，deg；向上为负）。
+                                    * 字段名沿用旧名，线协议字节不变 */
     float pitch_down;              /* 下 pitch 机构位姿角（视觉端 pitch_down，deg） */
     float roll;                    /* 车体/IMU roll（视觉端 roll，deg） */
     float yaw_vel;                 /* yaw 角速度（视觉端 yaw_vel，rad/s） */
-    float pitch_base_relative_vel; /* 发给视觉的 base-relative pitch 角速度（视觉端 pitch_vel，rad/s） */
+    float pitch_base_relative_vel; /* 世界系 pitch 角速度（视觉端 pitch_vel，rad/s；向上为正） */
     float roll_vel;                /* 车体/IMU roll 角速度（视觉端 roll_vel，rad/s） */
     float v_x;                     /* 车体 x 速度（视觉端 v_x，m/s） */
     float v_y;                     /* 车体 y 速度（视觉端 v_y，m/s） */

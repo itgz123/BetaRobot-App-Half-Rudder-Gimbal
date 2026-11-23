@@ -37,21 +37,22 @@ typedef enum : uint8_t
  *              结构体
  *============================================*/
 /* 云台→cmd 反馈（队列，不上线，无需字节对齐）。
- * yaw 有两套反馈，坐标系不同，别混用：
- *   yaw_position / yaw_vel —— IMU 世界系航向（rad, rad/s）。与视觉下发的世界系 yaw 同一坐标系，
- *                             cmd 的 yaw 规划器拿它当锚点、并原样回传给视觉。
- *   yaw_motor_*            —— yaw 电机编码器的关节角/角速度（rad, rad/s），即"云台相对底盘"。
- *                             无减速箱，位置为单圈绝对角、已 wrap 到 ±π（不做软件多圈累加）。
- *                             cmd 用它在本地算实测 θ（扣机械零位偏置）并旋转摇杆向量；
- *                             底盘不接收实测角，而是自己从共享 CAN1 读同一颗 RS05。
- *                             帧里的 gimbal2chassis_data.yaw 是**目标偏角** θ_ref
- *                             （normal/hole = 0，gyro 斜坡），见 app_cmd.c 的
- *                             chassis_yaw_target_from_mode 与底盘 ChassisWCommand。 */
+ * pitch 与 yaw 都是**世界系**量，cmd 不做任何坐标系换算：
+ *   pitch_world / pitch_vel —— 上 pitch 指向/角速度（rad, rad/s），ZYX 符号（正=低头），
+ *                             即视觉线协议 pitch 的 rad 版。已含基座倾角与安装偏置。
+ *   yaw_position / yaw_vel  —— IMU 世界系航向（rad, rad/s），与视觉世界系 yaw 同系。
+ * yaw_motor_* 是另一套量（云台相对底盘的关节角），别与上面混用：
+ *   无减速箱，位置为单圈绝对角、已 wrap 到 ±π（不做软件多圈累加）。
+ *   cmd 用它在本地算实测 θ（扣机械零位偏置）并旋转摇杆向量；
+ *   底盘不接收实测角，而是自己从共享 CAN1 读同一颗 RS05。
+ *   帧里的 gimbal2chassis_data.yaw 是**目标偏角** θ_ref
+ *   （normal/hole = 0，gyro 斜坡），见 app_cmd.c 的
+ *   chassis_yaw_target_from_mode 与底盘 ChassisWCommand。 */
 typedef struct
 {
     gimbal_state_e state;      // 云台实际姿态（失能/立起中/直立/倒下中/倒下）
-    float pitch_position;      // pitch轴当前反馈位置 (rad)
-    float pitch_vel;           // pitch轴当前反馈速度 (rad/s)
+    float pitch_world;         // 上pitch世界系指向 (rad)，正=低头；= 视觉线协议 pitch
+    float pitch_vel;           // 上pitch世界系角速度 (rad/s)，与 pitch_world 同号
     float yaw_position;        // yaw轴当前世界系航向 (rad)，来自 IMU
     float yaw_vel;             // yaw轴当前世界系航向角速度 (rad/s)，来自 IMU+陀螺仪投影
     float pitch_down_position; // 下pitch轴当前反馈位置 (rad)
@@ -61,9 +62,9 @@ typedef struct
 typedef struct
 {
     robot_mode mode; // 状态机
-    float pitch_x;   // pitch轴设定位置
-    float pitch_v;   // pitch轴设定速度
-    float pitch_a;   // pitch轴设定加速度
+    float pitch_x;   // 上pitch世界系设定指向 (rad)，正=低头；gimbal 侧换算关节角并限位
+    float pitch_v;   // 上pitch世界系设定角速度 (rad/s)，正=低头
+    float pitch_a;   // 上pitch世界系设定角加速度 (rad/s²)
     float yaw_x;     // yaw轴设定位置
     float yaw_v;     // yaw轴设定速度
     float yaw_a;     // yaw轴设定加速度

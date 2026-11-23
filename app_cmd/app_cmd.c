@@ -81,15 +81,7 @@ gimbal：底盘旋转导致云台底座旋转，需要前馈补偿，不然等�
 /* 视觉直通路的限幅（cmd 不过规划器，直接把视觉给的 位置/速度/加速度 下发给云台）。
  * 数值与摇杆规划器是同一套整定值（robot_def.h 的 pitch_speed 等），但用独立宏名：
  * 视觉是外环直接给设定值，将来若要单独收紧/放宽，不必改动遥控手感。
- * pitch 位置限位与规划器同坐标：0 = 上 pitch 水平（下 pitch 直立）。 */
-#define VISION_PITCH_POS_LIMIT_MIN (pitchup_position_1 - pitchup_position_2)
-#define VISION_PITCH_POS_LIMIT_MAX (pitchup_position_3 - pitchup_position_2)
-/* 内部 pitch 坐标（gimbal 回传的 pitch_position）在“下 pitch 直立、上 pitch 水平”时的
- * 数值不是 0：pitch_position = (u - U0) - (d - Dmin)，代入标定姿态即为
- * (U2 - U0) - (Dmax - Dmin) ≈ -0.0912 rad(-5.23°)。
- * 视觉 pitch_base_relative 以“上 pitch 水平 = 0”为原点、向上为负，
- * 故内部位置设定值 = -视觉角度 + 本偏置；回传时反过来先减掉本偏置再取反。 */
-#define VISION_PITCH_ZERO_OFFSET ((pitchup_position_2 - pitchup_position_0) - (pitchdown_position_max - pitchdown_position_min))
+ * 位置不限幅：pitch 的机械限位在 gimbal 侧按基座相对坐标做（cmd 只传世界系量）。 */
 #define VISION_PITCH_SPEED_LIMIT (pitch_speed)
 #define VISION_PITCH_ACC_LIMIT (pitch_acceleration)
 #define VISION_YAW_SPEED_LIMIT (yaw_speed)
@@ -480,14 +472,14 @@ static robot_mode gimbal_mode_effective(void)
 
 /*======== 发送层 =========*/
 /* 视觉符号标定调试通道（直接写 VOFA，CH13~CH25；axis 占 CH1~CH12）：
- *   CH13 视觉原始 pitch_base_relative (deg，视觉约定向上为负)
- *   CH14 视觉原始 target_pitch_base_relative (deg)
+ *   CH13 视觉原始 pitch_base_relative (deg，世界系，视觉约定向上为负)
+ *   CH14 视觉原始 target_pitch_base_relative (deg，世界系)
  *   CH15 视觉原始 v_pitch (rad/s)
  *   CH16 视觉原始 a_pitch (rad/s²)
- *   CH17 转换后 cmd→pitch_x (rad，内部向上为正)
- *   CH18 转换后 cmd→pitch_v (rad/s)
- *   CH19 转换后 cmd→pitch_a (rad/s²)
- *   CH20 上 pitch 实测位置 (rad)
+ *   CH17 转换后 cmd→pitch_x (rad，世界系，正=低头)
+ *   CH18 转换后 cmd→pitch_v (rad/s，世界系)
+ *   CH19 转换后 cmd→pitch_a (rad/s²，世界系)
+ *   CH20 上 pitch 实测世界系指向 (rad)
  *   CH21 视觉原始 yaw (deg)
  *   CH22 视觉原始 v_yaw (rad/s)
  *   CH23 视觉原始 a_yaw (rad/s²)
@@ -495,7 +487,8 @@ static robot_mode gimbal_mode_effective(void)
  *   CH25 视觉控制有效标志 (1=本拍来自视觉源，0=遥控/其他)
  * 非视觉源时 CH13~CH16、CH21~CH24 置 0。
  * 判符号：视觉帧是保持的，只取 CH24 变化（或 CH13/CH17 跳变）的采样点做跨帧差分；
- * 内部位置对时间求导与 CH15 同号 → 当前“位置取反、v/a 不取反”正确，反号则 v/a 也要取反。 */
+ * 世界系位置（正=低头）对时间求导应与 -CH15 同号（视觉 v 为向上为正）；
+ * 若同号 → RX 里把 v/a 取负是对的，反号则应改回不取负。 */
 // static void send_visual_debug_vofa(uint8_t valid)
 // {
 //     VofaSetChannel(13, valid ? vision_recv_data.pitch_base_relative : 0.0f);
@@ -505,7 +498,7 @@ static robot_mode gimbal_mode_effective(void)
 //     VofaSetChannel(17, cmd_cmd2gimbal_data.pitch_x);
 //     VofaSetChannel(18, cmd_cmd2gimbal_data.pitch_v);
 //     VofaSetChannel(19, cmd_cmd2gimbal_data.pitch_a);
-//     VofaSetChannel(20, cmd_gimbal2cmd_data.pitch_position);
+//     VofaSetChannel(20, cmd_gimbal2cmd_data.pitch_world);
 //     VofaSetChannel(21, valid ? vision_recv_data.yaw : 0.0f);
 //     VofaSetChannel(22, valid ? vision_recv_data.v_yaw : 0.0f);
 //     VofaSetChannel(23, valid ? vision_recv_data.a_yaw : 0.0f);
@@ -549,22 +542,16 @@ static void send_gimbal(void)
     {
         // 视觉源：直接给 位置/速度/加速度，不过规划器
         // 单位约定：视觉 pitch/yaw 为 deg（转 rad）；v/a 为 rad/s、rad/s²（不转）
-        // 坐标系：pitch 为 base-relative（与 app_gimbal 一致）；yaw 为世界系（需标定对齐电机系）
-        /* 符号：视觉线协议的 pitch **位置** 负方向朝上，本板内部 pitch 正方向朝上 → 位置取反。
-         * 速度/加速度 **不取反**：实测视觉发送的 v/a 与位置字段不是同一镜像 —— 用
-         * ∫ref_vel·dt 对 (ref - 零位) 做回归，斜率应为 +1 才与位置导数同相，而 v/a 原样
-         * 传入时才是同相（取反后反而与位置环反相，前馈拖后腿，小幅视觉目标几乎跟不动）。
-         * 零位：视觉以“上 pitch 水平”为 0，而内部 pitch_position 在同一姿态下是
-         * VISION_PITCH_ZERO_OFFSET（非 0），故位置还要加回该偏置；速度/加速度是导数，
-         * 不含零位。 */
-        /* 限幅：视觉是外环直通，异常/突变值会直接变成大误差和大前馈；这里先把视觉角夹到与
-         * 规划器相同的物理约束内（数值同源，宏独立命名，见文件头 VISION_*_LIMIT），再加零位偏置。
-         * yaw 位置不限幅 —— 它是无限旋转轴，±π 环绕由 yaw 轴误差归一化处理。 */
-        cmd_cmd2gimbal_data.pitch_x =
-            Lib_Math_Clamp(-DEG_TO_RAD(vision_recv_data.pitch_base_relative), VISION_PITCH_POS_LIMIT_MIN, VISION_PITCH_POS_LIMIT_MAX) +
-            VISION_PITCH_ZERO_OFFSET;
-        cmd_cmd2gimbal_data.pitch_v = Lib_Math_Clamp(vision_recv_data.v_pitch_base_relative, -VISION_PITCH_SPEED_LIMIT, VISION_PITCH_SPEED_LIMIT);
-        cmd_cmd2gimbal_data.pitch_a = Lib_Math_Clamp(vision_recv_data.a_pitch_base_relative, -VISION_PITCH_ACC_LIMIT, VISION_PITCH_ACC_LIMIT);
+        // 坐标系：pitch/yaw 均为**世界系**，与 cmd→gimbal 的世界系语义直接对接，cmd 不做换算：
+        //   pitch 关节角/限位在 gimbal 侧按基座相对坐标换算（见 app_gimbal 的 pitchup_ref）。
+        /* 符号：线协议**位置**“向上为负”，与 ZYX 欧拉 pitch 同号（正=低头），可直接下发。
+         * 速度/加速度实测是“向上为正”（与位置字段镜像）：取负换成世界系 ZYX 符号，
+         * 与位置量一致；gimbal 侧再按“关节角速度 = 基座角速度 - 世界系角速度”换算。
+         * 限幅只夹 v/a（异常/突变值会变成大前馈），位置交给 gimbal 的机械限位。
+         * yaw 位置不限幅 —— 无限旋转轴，±π 环绕由 yaw 轴误差归一化处理。 */
+        cmd_cmd2gimbal_data.pitch_x = DEG_TO_RAD(vision_recv_data.pitch_base_relative);
+        cmd_cmd2gimbal_data.pitch_v = -Lib_Math_Clamp(vision_recv_data.v_pitch_base_relative, -VISION_PITCH_SPEED_LIMIT, VISION_PITCH_SPEED_LIMIT);
+        cmd_cmd2gimbal_data.pitch_a = -Lib_Math_Clamp(vision_recv_data.a_pitch_base_relative, -VISION_PITCH_ACC_LIMIT, VISION_PITCH_ACC_LIMIT);
         cmd_cmd2gimbal_data.yaw_x = DEG_TO_RAD(vision_recv_data.yaw);
         cmd_cmd2gimbal_data.yaw_v = Lib_Math_Clamp(vision_recv_data.v_yaw, -VISION_YAW_SPEED_LIMIT, VISION_YAW_SPEED_LIMIT);
         cmd_cmd2gimbal_data.yaw_a = Lib_Math_Clamp(vision_recv_data.a_yaw, -VISION_YAW_ACC_LIMIT, VISION_YAW_ACC_LIMIT);
@@ -578,28 +565,30 @@ static void send_gimbal(void)
         PlannerOutput_s out;
         in.seed = seed_position; // 两个轴同拍播种
 
-        // pitch：限幅模式（有机械限位）。目标位置由 planner 内部开环累加，下面两个
-        // current_* 只在 seed 拍被用来重新锚定累加器（电流外推不再读反馈位置）
+        // pitch：限幅模式。目标位置由 planner 内部开环累加，current_* 只在 seed 拍被用来
+        // 重新锚定累加器（不是每拍读反馈，外力只体现为下游位置环的误差）
         if (robot_mode_hole == cmd_ctx.mode)
         {
-            /* 过洞档：**不对 pitch 通道累加**，并把累加器直接钉在 0 = 上 pitch 水平
-             * （规划器坐标以 pitchup_position_2「下 pitch 直立、上 pitch 水平」为原点，
-             * 限位就是 pitchup_position_1/3 - pitchup_position_2）。
-             * 若折叠期间仍按摇杆积分，残留的"低头"目标会在下一次立起时被直接执行 ——
-             * 上升阶段上 pitch 跟随 cmd 设定值，就会往车体里扎。钉 0 后每次直立都从
-             * 水平开始，立起来以后再按摇杆累加。 */
-            pitch_planner.ref_position = 0.0f;
+            /* 过洞档：**不对 pitch 通道累加**，把累加器钉在当前实际的世界系指向上。
+             * 洞态/倒下过程中上 pitch 由 gimbal 自己的位姿斜坡驱动（不用 pitch_x），
+             * 这里只保证恢复直立时从当前姿态出发，不会执行折叠期间残留的摇杆目标。 */
+            pitch_planner.ref_position = cmd_gimbal2cmd_data.pitch_world;
             pitch_planner.position_valid = 1; // 已播种，恢复直立时不再用实测位置重锚
-            cmd_cmd2gimbal_data.pitch_x = 0.0f;
+            cmd_cmd2gimbal_data.pitch_x = cmd_gimbal2cmd_data.pitch_world;
             cmd_cmd2gimbal_data.pitch_v = 0.0f;
             cmd_cmd2gimbal_data.pitch_a = 0.0f;
         }
         else
         {
-            in.current_position = cmd_gimbal2cmd_data.pitch_position;
+            /* 世界系闭环：规划器累加器存**世界系**指向（ZYX 符号，正=低头，0 = 世界水平），
+             * 原样下发；gimbal 侧每拍换算成基座相对角并限位（机械限位相对基座）。
+             * 摇杆不动时累加器不变，底盘上下坡把基座带斜只会改变 gimbal 侧的关节角，
+             * 云台在世界系里保持原指向；水平瞄准（0）时上下坡也一直指水平。
+             * 摇杆取反：世界系正方向（低头）与原内部坐标"向上为正"相反，保持手感不变。 */
+            in.current_position = cmd_gimbal2cmd_data.pitch_world;
             in.current_speed = cmd_gimbal2cmd_data.pitch_vel;
             in.current_acceleration = 0.0f; // 电机无加速度反馈
-            in.target_cmd = channel_deadzone(cmd_ctx.gimbal_pitch_channel);
+            in.target_cmd = -channel_deadzone(cmd_ctx.gimbal_pitch_channel);
             PlannerCalculate(&pitch_planner, &in, &out);
             cmd_cmd2gimbal_data.pitch_x = out.position;
             cmd_cmd2gimbal_data.pitch_v = out.speed;
@@ -817,10 +806,11 @@ static void send_vision(void)
     }
     // yaw/yaw_vel 回传的是 IMU 世界系量，与协议约定的"世界系 yaw"一致
     vision_send_data.yaw = RAD_TO_DEG(cmd_gimbal2cmd_data.yaw_position);
-    /* pitch 与接收帧同一符号约定：线上 **负方向朝上**，本板内部正方向朝上 → 回传取反
-     * （位置/速度一致）。位置还要先减掉内部零位 VISION_PITCH_ZERO_OFFSET，换成“水平=0”
-     * 的视觉坐标后再取反。pitch_down 是下 pitch 机构位姿角，另一物理量，不参与镜像。 */
-    vision_send_data.pitch_base_relative = RAD_TO_DEG(-(cmd_gimbal2cmd_data.pitch_position - VISION_PITCH_ZERO_OFFSET));
+    /* pitch 回传的是**世界系**上 pitch 指向（gimbal 侧已扣安装偏置、含基座倾角），
+     * 线协议"向上为负"与 ZYX 欧拉 pitch 同号（正=低头），直接换算单位即可。
+     * pitch_vel 也是世界系角速度（正=低头）；视觉协议的速度是"向上为正"（与位置镜像），
+     * 故取负后再发，与视觉自己的 v/a 符号一致。 */
+    vision_send_data.pitch_base_relative = RAD_TO_DEG(cmd_gimbal2cmd_data.pitch_world);
     vision_send_data.pitch_down = RAD_TO_DEG(cmd_gimbal2cmd_data.pitch_down_position); // 下pitch位姿角 (rad→deg)
     vision_send_data.yaw_vel = cmd_gimbal2cmd_data.yaw_vel;
     vision_send_data.pitch_base_relative_vel = -cmd_gimbal2cmd_data.pitch_vel;
@@ -861,16 +851,14 @@ void AppCmdInit(void)
     BSP_ASSERT_APP_CALL(SBUSConfig(&sbus_inst, &sbus_cfg));
 
     // 初始化规划器（位置限幅/位置模式/最大速度/最大加速度）
-    /* TODO 实车核对 pitch 限位基准：这里用的是「下 pitch 直立、上 pitch 水平」为原点的量纲
-     *      （U1-U2 / U3-U2），而 gimbal 回传的 pitch_position 是以「两轴都倒下」为原点的
-     *      (u - U0) - (d - Dmin)（app_gimbal.c 的反馈合成式）。两者相差约 0.0213 rad(≈1.2°)：
-     *      当前下限比机械可达下限低 1.2°、上限提前 1.2° 停住。开环累加后目标不再每拍被反馈
-     *      拉回，停在错位边界上的表现会更明显。确认标定姿态后应改为
-     *      U1-U0-(Dmax-Dmin) / U3-U0-(Dmax-Dmin)（≈ -0.4359 / 0.7876）。 */
+    /* pitch 规划器工作在**世界系**俯仰坐标：ZYX 符号（正=低头），0 = 世界水平。
+     * 机械限位宏是"基座相对、向上为正"的 p，世界系与之符号相反、水平基准相同，
+     * 故世界系限位 = [-PITCH_POS_LIMIT_MAX, -PITCH_POS_LIMIT_MIN]。
+     * 基座倾斜时的可达范围会更窄，由 gimbal 侧换算后按 p 再夹一次。 */
     Planner_Init_Config_s pitch_cfg = {
         .position_mode = PLANNER_POS_LIMITED, // pitch 有机械限位 → 限幅
-        .pos_limit_min = pitchup_position_1 - pitchup_position_2,
-        .pos_limit_max = pitchup_position_3 - pitchup_position_2,
+        .pos_limit_min = -PITCH_POS_LIMIT_MAX,
+        .pos_limit_max = -PITCH_POS_LIMIT_MIN,
         .max_speed = pitch_speed,
         .max_acc = pitch_acceleration,
     };
