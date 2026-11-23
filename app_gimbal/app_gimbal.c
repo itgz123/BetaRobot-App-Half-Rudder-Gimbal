@@ -176,6 +176,14 @@ static uint64_t gimbal_enable_last_ms = 0; // 上次周期重发使能的时刻 
  * 不要切到 NORMAL，否则模块内部的位置环会和这套律叠加。 */
 #define GIMBAL_PITCHDOWN_AXIS_STAGE AXIS_LITE_STAGE_FIXED_TORQUE
 
+/* yaw 轴调试阶段：调匀速摩擦辨识用 IDENTIFY_FRICTION_CV，正常控制改回 NORMAL。
+ * yaw 是可连续旋转的 wrap 轴，故用 wrap 模式：正向 turns 圈 → 反向 turns 圈，循环。
+ * speed 为输出侧角速度 (rad/s)；单次只跑一个速度级，改 speed 重跑即可得到多个速度点。
+ * ⚠ 多圈旋转前先确认线缆/滑环允许的圈数，turns 不要超过安全行程。 */
+#define GIMBAL_YAW_AXIS_STAGE AXIS_LITE_STAGE_TUNE
+#define GIMBAL_YAW_FRICTION_SPEED 4.0f
+#define GIMBAL_YAW_FRICTION_TURNS 3.0f
+
 /* 姿态过渡用位置设定值（上 pitch 限速后喂给 axis 模块；下 pitch 仅作状态锚点）
  * 与状态边沿检测 */
 static float pitchdown_posture_ref = 0.0f;
@@ -409,10 +417,13 @@ void AppGimbalInit(void)
     AxisPidLite_Init_Config_s pitchup_axis_cfg = {
         .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
         .delay_ms = 5000,                // 延时时间 (ms)
-        .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
-        .vofa_base_ch = 1,
-        .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
-        .vofa_pos_pid_base_ch = 19, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
+        /* 调 yaw 时关掉上 pitch 的 VOFA：只有 CH1~CH25，yaw 基础块 CH1~12 +
+         * 速度环块 CH13~18 已占用；两轴同时开会每拍互相覆盖。
+         * 调完 yaw 再打开本轴时，记得同时把 yaw 的 vofa_enable 置 0。 */
+        .vofa_enable = 0,
+        // .vofa_base_ch = 1,
+        // .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 vofa_base_ch+12
+        // .vofa_pos_pid_base_ch = 19, // 位置环内部变量起始通道，占 base ~ base+5，0 按 vofa_base_ch+18
         .params =
             {
                 .gravity = 0.389f, // 重力前馈系数（标定 0.28→0.30）
@@ -540,25 +551,37 @@ void AppGimbalInit(void)
     BSP_ASSERT_APP_CALL(AxisPidLiteInit(&pitchdown_axis, &pitchdown_axis_cfg));
 
     AxisPidLite_Init_Config_s yaw_axis_cfg = {
-        .stage = AXIS_LITE_STAGE_NORMAL, // 控制阶段
-        .delay_ms = 5000,                // 延时时间 (ms)
-        // .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
-        // .vofa_base_ch = 1,
-        // .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5，0 按 1 处理
+        /* 调 yaw 前先把云台切到 normal/gyro：AppGimbalRun 只在状态非 disable 时
+         * 调用 yaw_axis，失能态 yaw 输出 0、本阶段不会启动。 */
+        .stage = GIMBAL_YAW_AXIS_STAGE, // 控制阶段：当前为匀速摩擦辨识
+        .delay_ms = 5000,               // 延时时间 (ms)
+        /* 调 yaw 时只开这一轴：基础块 CH1~CH12 + 速度环块 CH13~CH18；
+         * CH19~CH22 由 AppGimbalRun 额外写编码器位置/速度、wrap 行程、方向。
+         * 位置环块在摩擦辨识阶段不参与，关掉（否则会与 CH19~CH22 重叠）。 */
+        .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
+        .vofa_base_ch = 1,
+        .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5
+        .vofa_pos_pid_base_ch = 19, // 本阶段不用位置环，保留配置但不使能
         .params =
             {
                 .gravity = 0.0f,
                 .gear_ratio = 1,
                 .inertia = 0.015f,
-                .friction_coulomb_pos = 0.0f,
-                .friction_coulomb_neg = 0.0f,
-                .friction_viscous_pos = 0.0f,
-                .friction_viscous_neg = 0.0f,
+
+                .friction_coulomb_pos = 0.1208f,
+                .friction_viscous_pos = 0.0057f,
+                .friction_coulomb_neg = 0.1412f,
+                .friction_viscous_neg = 0.0053f,
+                /* 摩擦前馈已改用**参考速度**（CalcFeedforward 的 ff_speed 传 ref_vel）：
+                 * 静止时 ref=0，不会因 yaw_rate 噪声让 Coulomb 项在 ±Tc 之间跳变；
+                 * 这里不再加死区，避免低速命令时死区边界自己引入小幅震荡。
+                 * 若以后某轴必须用实际速度做摩擦前馈，再把它设成 0.1~0.2 rad/s。 */
+                .friction_speed_deadband = 0.0f,
             }, // 轴参数
         .sine_params =
             {
                 .amplitude = 0.2f,
-                .freq = 2,
+                .freq = 3.5f,
             }, // 正弦参数
         .chirp_params =
             {
@@ -574,6 +597,17 @@ void AppGimbalInit(void)
                 .duration = 1,
                 .num_freqs = 10,
             }, // 多正弦叠加参数
+        /* 匀速摩擦辨识：wrap 模式（yaw 可连续旋转），正/反向各转 turns 圈后换向。
+         * 速度环闭环跟踪 ref_vel = ±speed，稳态段 (加速度≈0) 的力矩输出
+         * 减去重力（yaw 重力为 0）即为摩擦，可直接拟合库仑 + 粘性摩擦。 */
+        .friction_cv_params =
+            {
+                .speed = GIMBAL_YAW_FRICTION_SPEED,
+                .wrap_mode = 1,
+                .turns = GIMBAL_YAW_FRICTION_TURNS,
+                .limit_min = -(float)M_PI, // wrap 模式不用，占位
+                .limit_max = (float)M_PI,
+            },
         /* 等效原 MIT 整定 kp=5 / kd=0.8：vel_kp=0.8、pos_kp=5/0.8=6.25。
          * 两环只开 P（ki/kd=0），与 MIT 的 PD 严格等效。 */
         .pos_pid =
@@ -599,9 +633,16 @@ void AppGimbalInit(void)
          *   - 变速积分：|e|≤0.1 rad/s 全积分（稳态用），0.1~0.4 rad/s 线性减弱，
          *     >0.4 rad/s 停止积分，防止启动/阶跃/视觉跳变时积分饱和造成过冲。
          *   - 梯形积分：500 Hz 下减小采样积分偏差。 */
+        /* 2026-11-23 手动动作复盘（ig/qqq.csv，NORMAL）：
+         *   kp=1.4 时，ref_vel 脉冲结束后过冲明显：t≈8.58 s ref_vel=0、
+         *   实际速度仍 +0.64 rad/s，随后反向到 -0.43，P 力矩峰值约 ±1 Nm；
+         *   位置误差仍只有 3 mrad RMS。
+         *   速度环时间常数 J/kp≈11 ms，已接近电机 ~8.6 ms 延迟，P 偏大。
+         *   先降到 0.8（旧 2 Hz 整定值），优先保证正常动作的速度平滑；
+         *   3.5 Hz 正弦的速度误差会略变大，按需再折中。 */
         .vel_pid =
             {
-                .kp = 1.2f,                      // 比例系数 Nm/(rad/s)
+                .kp = 1.0f,                      // 比例系数 Nm/(rad/s)（1.4→0.8，减小阶跃过冲）
                 .ki = 2.0f,                      // 积分系数 Nm/(rad/s·s)
                 .kd = 0,                         // 微分系数
                 .integral_limit = 0.2f,          // 积分限幅阈值 (Nm)
@@ -826,8 +867,13 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
      * 注意：帧由 drvlib 发出，app 不要再自己调 VofaSend（会多发一帧）；
      *       而通道号是全局的 —— lib_axis_pid_lite 的 vofa_enable 占用
      *       CH vofa_base_ch ~ +11、app_shoot.c 的调试块占用 CH1~CH4，
-     *       要同时看就得把它们错开或用别的通道号；
-     *       本 app 眼下是"整定发射就把这里关掉、发射调完再打开"（见下面 vofa_enable） */
+     *       要同时看就得把它们错开或用别的通道号。
+     * 当前配置（调 yaw 轴摩擦辨识）：
+     *   - 唯一发送者 = AppGimbalRun 末尾的 VofaSend；
+     *   - 唯一输出轴 = yaw_axis：CH1~CH12 基础块 + CH13~CH18 速度环块；
+     *   - AppGimbalRun 额外写 CH19~CH22：编码器位置/速度、wrap 行程、方向；
+     *   - 上 pitch 轴的 vofa_enable 已置 0（否则会与 yaw 抢 CH1~CH18）；
+     *   - BMI088 vofa_enable=0、SHOOT_VOFA_ENABLE=0、三轴 lib_motor vofa_enable=0。 */
 
     // setref
     /* 状态机：驱动量 = cmd 下发的模式（目标姿态）+ 下 pitch 位置（实际姿态），解出
@@ -955,8 +1001,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
             pitchup_ref.acceleration = -gimbal_cmd2gimbal_data.pitch_a;
             /* 顶到限位且前馈仍朝界外：清零，避免持续顶死机械限位（与规划器 LIMITED 一致） */
             if ((pitch_p_raw != pitch_p_cmd) &&
-                (((pitch_p_raw > pitch_p_cmd) && (pitchup_ref.speed > 0.0f)) ||
-                 ((pitch_p_raw < pitch_p_cmd) && (pitchup_ref.speed < 0.0f))))
+                (((pitch_p_raw > pitch_p_cmd) && (pitchup_ref.speed > 0.0f)) || ((pitch_p_raw < pitch_p_cmd) && (pitchup_ref.speed < 0.0f))))
             {
                 pitchup_ref.speed = 0.0f;
                 pitchup_ref.acceleration = 0.0f;
@@ -989,6 +1034,28 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
             .acceleration = gimbal_cmd2gimbal_data.yaw_a,
         };
         yaw_motor_setref = AxisPidLiteCalculate(&yaw_axis, &yaw_state, &yaw_ref);
+
+        /* yaw 摩擦辨识附加观测 CH19~CH22（本 app 当前只有 yaw 写 VOFA）：
+         *   CH19 编码器单圈关节角 (rad)
+         *   CH20 编码器关节速度 (rad/s)
+         *   CH21 wrap 模式本方向累计行程 (rad)
+         *   CH22 当前方向 (+1/-1)
+         * 用途：区分 IMU yaw_rate 的每圈一次误差与真实机械阻力 ——
+         * 若 CH20 平稳而 CH2 有每圈波动，则 CH1~CH12 的力矩波动主要来自 IMU 测速。 */
+        VofaSetChannel(19, (float)yaw_ctrl.data.position);
+        VofaSetChannel(20, yaw_ctrl.data.speed);
+        VofaSetChannel(21, yaw_axis.friction_cv_travel);
+        VofaSetChannel(22, yaw_axis.friction_cv_dir);
+    }
+    else
+    {
+        /* 失能/未使能时 yaw_axis 本拍没有计算；如果不清零，VofaSend 会把上一拍的
+         * 通道值一直重发，日志末尾看起来像“轴还在 -11 rad/s 匀速转”，其实是残值。
+         * 这里把当前 yaw 占用的 CH1~CH22 全部清零。 */
+        for (uint8_t ch = 1; ch <= 22; ch++)
+        {
+            VofaSetChannel(ch, 0.0f);
+        }
     }
 
     // send：开环下返回值 = ref × motor_direction（方向修正仍在控制核里统一做）
