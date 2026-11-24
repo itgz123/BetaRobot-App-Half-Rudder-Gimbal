@@ -68,6 +68,10 @@ typedef struct
     float yaw_x;     // yaw轴设定位置
     float yaw_v;     // yaw轴设定速度
     float yaw_a;     // yaw轴设定加速度
+    /* 底盘实测速度 (m/s，车体系)：只在本板内部经队列转给 app_gimbal，
+     * 由它差分得到底盘加速度做加速度计门控。不在 CAN 线上、不改底盘协议。 */
+    float chassis_vx;
+    float chassis_vy;
 } cmd2gimbal_data_t;
 
 #endif // !__APP_CMD_GIMBAL_H

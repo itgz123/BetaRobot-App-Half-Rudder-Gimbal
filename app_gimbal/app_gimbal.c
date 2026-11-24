@@ -22,8 +22,78 @@
  *   或打开 app_shoot 的调试块（SHOOT_VOFA_ENABLE=1），必须把这里置 0 ——
  *   否则通道值互相覆盖，而且每拍会发两帧。
  * ⚠ 与 axis 的 vofa_enable 配套：本开关=1 但没有任何 axis 打开 vofa_enable 时，
- *   发出去的是残留通道值。 */
+ *   发出去的是残留通道值。当前由下面的 GIMBAL_PITCH_DEBUG_VOFA 调试块负责写通道
+ *   （见其通道表），所以不会出现这个问题。 */
 #define GIMBAL_VOFA_SEND 1
+
+/* ─────────── 加减速点头诊断 VOFA（2026-11-24）───────────
+ * 目的：把"基座真的转了"和"加速度计把前向加速度当成倾角"分开。
+ *   CH4 base_pitch       = KF 估计的基座世界系 pitch（控制真正用的量）
+ *   CH5 acc_pitch_base   = 加速度计直接反算的基座 pitch（未滤波，a 会让它偏 a/g）
+ *   CH6 gyro_pitch_base  = 纯陀螺积分的基座 pitch（短时参考，无 acc 校正）
+ *   CH9 pitch_p          = 上 pitch 关节相对基座角
+ *   CH19 pitch_world_gyro= CH6 - CH9，陀螺参考的炮管物理世界系 pitch
+ *   摇杆不动（CH8 基本恒定）时，CH19 - CH8 就是真正的物理点头量（rad）；
+ *   CH7 - CH8 只是关节环的跟踪误差（控制会把 CH7 拉到 CH8，看不出物理点头）。
+ *   CH10/CH13            = 前向比力 / 合加速度模长，用来和加减速对齐
+ *
+ * 打开时本文件末尾的调试块每拍写 CH1~CH25，并自动把 yaw_axis 的 VOFA 关掉
+ * （通道号全局共享，两处同时写会互相覆盖）。0 = 恢复原来的调轴输出。
+ * ⚠ VOFA+ 的 JustFloat 帧固定是 ch0 时间戳 + CH1~CH25；按 26 通道配置，
+ *   本表只用到 CH1~CH25。⚠ 与 app_shoot 的调试块、drvlib_bmi088
+ *   的 vofa_enable 仍然互斥（二者当前都是 0）。
+ *
+ * 通道表：
+ *   CH1  euler.roll         rad     IMU 安装 roll
+ *   CH2  euler.pitch        rad     IMU 安装 pitch（含安装偏置）
+ *   CH3  euler.yaw          rad
+ *   CH4  base_pitch         rad     = CH2 - GIMBAL_IMU_MOUNT_PITCH
+ *   CH5  acc_pitch_base     rad     加速度计反算基座 pitch（未滤波）
+ *   CH6  gyro_pitch_base    rad     纯陀螺积分基座 pitch（调试参考）
+ *   CH7  pitch_world        rad     上 pitch 世界系指向（gimbal 回传）
+ *   CH8  pitch_x            rad     cmd 下发的世界系目标
+ *   CH9  pitch_p            rad     上 pitch 关节相对基座角 p
+ *   CH10 acc_x              m/s²    IMU x 轴比力（前向加速度 + 重力分量）
+ *   CH11 acc_y              m/s²
+ *   CH12 acc_z              m/s²
+ *   CH13 acc_norm           m/s²    合加速度模长
+ *   CH14 gyro_x             rad/s
+ *   CH15 gyro_y             rad/s
+ *   CH16 chassis_ax_base    m/s²    底盘速度差分得到的前向加速度（基座系，门控输入）
+ *   CH17 temperature        ℃
+ *   CH18 acc_gate_pitch     0/1     pitch 加速度计门控状态（1 = 本帧跳过 acc）
+ *   CH19 pitch_world_gyro   rad     = CH6 - CH9，陀螺参考的炮管物理世界系 pitch
+ *                                  （摇杆不动时 CH19 - CH8 就是点头量）
+ *   CH20 pitch_rate_kin     rad/s   θ̇ = cosφ·ωy - sinφ·ωz（纯陀螺积分的输入）
+ *   CH21 yaw_rel            rad     云台相对底盘前进方向（0 = 对正；静态“2者平行”看它）
+ *   CH22 yaw_motor_position rad     RS05 单圈绝对位置（原始反馈，调 yaw 偏置用）
+ *   CH23 pitchup_torque_cmd Nm      上 pitch 力矩指令（看云台是否在主动“打”这个点头）
+ *   CH24 pitchup_torque_fb  Nm      上 pitch 反馈力矩
+ *   CH25 app_dt             ms      AppGimbalRun 本拍周期
+ */
+#define GIMBAL_PITCH_DEBUG_VOFA 1
+
+/* 诊断打开时 yaw 轴不再写 CH1~CH18；关闭诊断后恢复原来的调轴输出。 */
+#if GIMBAL_PITCH_DEBUG_VOFA
+#define GIMBAL_YAW_VOFA_ENABLE 0
+#else
+#define GIMBAL_YAW_VOFA_ENABLE (AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID)
+#endif
+
+/* ─────────── 底盘加速度门控（B） + KF 慢校正（A）───────────
+ * 底盘 vx/vy 经 cmd2gimbal 队列带到本板（不改底盘协议/CAN 帧）；
+ * 本文件用 64ms 窗口端点差分 + 30ms 低通得到车体系加速度，再按当前 yaw_rel
+ * 转到云台基座系：
+ *   a_base_x（前向）-> 门控 pitch 的加速度计更新
+ *   a_base_y（侧向）-> 门控 roll
+ * 超过 ENTER 冻结对应轴的 acc 更新，低于 EXIT 恢复（迟滞）。
+ * 1 m/s² 对应假倾角 a/g ≈ 5.8°；配合 A 的慢 r_tilt（τ≈9s），门控延迟
+ * （窗口+低通约 60~90ms）期间 acc 校正也只走 1% 左右，跟不出明显角度。
+ * 轮速差分噪声大就加长 GIMBAL_ACC_GATE_WIN；欠灵敏就降低 ENTER。 */
+#define GIMBAL_ACC_GATE_WIN 32u     /* 32 拍 × 2ms = 64ms 速度差分窗 */
+#define GIMBAL_ACC_GATE_TAU_S 0.03f /* 加速度一阶低通时间常数 (s) */
+#define GIMBAL_ACC_GATE_ENTER 0.8f  /* m/s²，进入门控 */
+#define GIMBAL_ACC_GATE_EXIT 0.5f   /* m/s²，退出门控（迟滞） */
 
 // 实例
 DRV_DMMOTOR_INSTANCE_DEF(pitchdown_motor); // 下pitch电机
@@ -55,6 +125,84 @@ static void GimbalRSMotorReenable(void *owner)
  *   euler（roll/pitch 由 KF 出，yaw 为世界系积分）、yaw_rate（世界系 yaw 角速度）、
  *   gyro（已按标定修正）、temperature、valid */
 BMI088_KALMAN_INSTANCE_DEF(bmi088);
+
+/* ---- 底盘加速度门控状态（GimbalUpdateAccelGate）----
+ * vx/vy 用 64ms 端点差分：轮速反馈是采样保持的，逐拍差分会在每个更新沿上打尖；
+ * 端点差分的噪声 ∝ sqrt(2)/0.064s，再经 30ms 低通，阈值 0.8 m/s² 不会误触发。 */
+static float gimbal_chassis_vx_win[GIMBAL_ACC_GATE_WIN];
+static float gimbal_chassis_vy_win[GIMBAL_ACC_GATE_WIN];
+static uint64_t gimbal_chassis_ts_win[GIMBAL_ACC_GATE_WIN];
+static uint8_t gimbal_chassis_win_head = 0;
+static uint8_t gimbal_chassis_win_count = 0;
+static float gimbal_acc_gate_ax_lpf = 0.0f;  // 车体系前向加速度低通 (m/s²)
+static float gimbal_acc_gate_ay_lpf = 0.0f;  // 车体系侧向加速度低通 (m/s²)
+static float gimbal_acc_gate_ax_base = 0.0f; // 转到基座系后的前向加速度 (m/s²)，调试/门控
+static uint8_t gimbal_acc_gate_pitch = 0;    // 1 = 本帧冻结 pitch 的 acc 更新
+static uint8_t gimbal_acc_gate_roll = 0;     // 1 = 本帧冻结 roll 的 acc 更新
+
+/* 底盘速度 -> 加速度 -> 云台基座系 -> KF 加速度计门控。
+ * 每拍在 BMI088KalmanUpdate 之前调用；门控是"本帧"语义，KF Update 用完即清零。 */
+static void GimbalUpdateAccelGate(float dt_s, uint64_t time_stamp, float yaw_rel, float vx, float vy)
+{
+    if (dt_s <= 0.0f)
+    {
+        return;
+    }
+
+    /* 采样入窗（任务 2ms；底盘也是 2ms 发一帧，窗内最多 32 个更新） */
+    gimbal_chassis_vx_win[gimbal_chassis_win_head] = vx;
+    gimbal_chassis_vy_win[gimbal_chassis_win_head] = vy;
+    gimbal_chassis_ts_win[gimbal_chassis_win_head] = time_stamp;
+    gimbal_chassis_win_head = (uint8_t)((gimbal_chassis_win_head + 1u) % GIMBAL_ACC_GATE_WIN);
+    if (gimbal_chassis_win_count < GIMBAL_ACC_GATE_WIN)
+    {
+        gimbal_chassis_win_count++;
+    }
+
+    if (gimbal_chassis_win_count >= 2u)
+    {
+        const uint8_t oldest = (uint8_t)((gimbal_chassis_win_head + GIMBAL_ACC_GATE_WIN - gimbal_chassis_win_count) % GIMBAL_ACC_GATE_WIN);
+        const float span_s = (float)(time_stamp - gimbal_chassis_ts_win[oldest]) * 0.001f;
+        /* 窗口至少 10ms：上电前几拍/时间戳异常时不拿短基线差分 */
+        if (span_s > 0.01f)
+        {
+            const float ax_raw = (vx - gimbal_chassis_vx_win[oldest]) / span_s;
+            const float ay_raw = (vy - gimbal_chassis_vy_win[oldest]) / span_s;
+            const float alpha = (GIMBAL_ACC_GATE_TAU_S > 0.0f) ? (dt_s / (GIMBAL_ACC_GATE_TAU_S + dt_s)) : 1.0f;
+            gimbal_acc_gate_ax_lpf += alpha * (ax_raw - gimbal_acc_gate_ax_lpf);
+            gimbal_acc_gate_ay_lpf += alpha * (ay_raw - gimbal_acc_gate_ay_lpf);
+
+            /* 车体系 -> 云台基座系：θ = yaw_rel（逆时针为正） */
+            float sr = 0.0f;
+            float cr = 1.0f;
+            Lib_Math_SinCos(yaw_rel, &sr, &cr);
+            gimbal_acc_gate_ax_base = cr * gimbal_acc_gate_ax_lpf + sr * gimbal_acc_gate_ay_lpf;
+            const float ay_base = -sr * gimbal_acc_gate_ax_lpf + cr * gimbal_acc_gate_ay_lpf;
+
+            /* 迟滞门控：前进加速度污染 pitch，侧向污染 roll */
+            if (Lib_Math_Fabs(gimbal_acc_gate_ax_base) > GIMBAL_ACC_GATE_ENTER)
+            {
+                gimbal_acc_gate_pitch = 1u;
+            }
+            else if (Lib_Math_Fabs(gimbal_acc_gate_ax_base) < GIMBAL_ACC_GATE_EXIT)
+            {
+                gimbal_acc_gate_pitch = 0u;
+            }
+
+            if (Lib_Math_Fabs(ay_base) > GIMBAL_ACC_GATE_ENTER)
+            {
+                gimbal_acc_gate_roll = 1u;
+            }
+            else if (Lib_Math_Fabs(ay_base) < GIMBAL_ACC_GATE_EXIT)
+            {
+                gimbal_acc_gate_roll = 0u;
+            }
+        }
+    }
+
+    /* 每拍都下发（即使还在填窗，也把当前门控状态写给 KF；初始为 0 = 不门控） */
+    BMI088KalmanSetAccelGate(&bmi088, gimbal_acc_gate_roll, gimbal_acc_gate_pitch);
+}
 
 /* ─────────── PC 端标定结果：写死进固件 ───────────
  * static const 落在 .rodata，即"编进 flash 的数值"；模块内不做任何运行期标定。
@@ -191,6 +339,14 @@ static float pitchup_posture_ref = 0.0f;
 static gimbal_state_e gimbal_state_last = gimbal_state_disable_e;
 /* yaw 对准后锁存：一旦开始倒下就允许走完，不因中途 θ 抖动又停在半路 */
 static uint8_t gimbal_fall_permitted = 0;
+
+#if GIMBAL_PITCH_DEBUG_VOFA
+/* 纯陀螺积分的基座 pitch（诊断用，不参与控制）：上电后第一次有效姿态播种，
+ * 之后只积分 θ̇ = cosφ·ωy − sinφ·ωz，时间用 imu_data.dt（与 KF 同源，dt=0 不积分）。
+ * 陀螺残余零偏会让它缓慢漂移，只看短时（几秒）的形状即可。 */
+static float gimbal_dbg_gyro_pitch = 0.0f;
+static uint8_t gimbal_dbg_gyro_pitch_valid = 0;
+#endif
 
 /* 把 *cur 每拍朝 target 最多挪 max_delta，返回实际步长（秒化后作为 ref.speed 前馈） */
 static inline float GimbalSlewStep(float *cur, float target, float max_delta)
@@ -557,8 +713,10 @@ void AppGimbalInit(void)
         .delay_ms = 5000,               // 延时时间 (ms)
         /* 调 yaw 时只开这一轴：基础块 CH1~CH12 + 速度环块 CH13~CH18；
          * CH19~CH22 由 AppGimbalRun 额外写编码器位置/速度、wrap 行程、方向。
-         * 位置环块在摩擦辨识阶段不参与，关掉（否则会与 CH19~CH22 重叠）。 */
-        .vofa_enable = AXIS_PID_LITE_VOFA_BASE | AXIS_PID_LITE_VOFA_VEL_PID,
+         * 位置环块在摩擦辨识阶段不参与，关掉（否则会与 CH19~CH22 重叠）。
+         * ⚠ 当前 GIMBAL_PITCH_DEBUG_VOFA=1，GIMBAL_YAW_VOFA_ENABLE 为 0，本轴 VOFA
+         *   被诊断块关闭；调 yaw 时把该宏改 0，这里会自动恢复下面的通道配置。 */
+        .vofa_enable = GIMBAL_YAW_VOFA_ENABLE,
         .vofa_base_ch = 1,
         .vofa_vel_pid_base_ch = 13, // 速度环内部变量起始通道，占 base ~ base+5
         .vofa_pos_pid_base_ch = 19, // 本阶段不用位置环，保留配置但不使能
@@ -695,19 +853,27 @@ void AppGimbalInit(void)
         /* ---- 标定参数：写死进固件的常量 ---- */
         .calib = &s_bmi088_calib,
 
-        /* ---- 线性 KF 噪声 ----
-         * r_tilt 起手按"加速度计反算倾角噪声实测 0.14°(rms) → 6e-6 rad²"给，
-         * 再放大约 60 倍到 4e-4：留余量给机器人振动与加减速（振动下 acc 反算的
-         * 倾角噪声远大于静止值）。q_tilt 默认 1e-5 → 倾角校正时间常数约 0.3s，
-         * 安装倾角是静态量，慢一点更抗振动。
-         * q_bias = 0：关闭"零偏残差"状态估计。本机零偏几乎只随温度慢漂，
-         * 已由固件里写死的标定值 + 温漂斜率覆盖，再开一个残差状态只会和标定
-         * 互相打架（KF 拿加速度计当基准，而加速度计对倾角的观测无法区分
-         * "倾角变了"和"零偏漂了"，长时间运动后容易把假零偏积进姿态）。
-         * 若重标后仍发现 yaw 漂移明显（上电零偏重复性差），可以试着开它。 */
+        /* ---- 线性 KF 噪声（2026-11-24 按实车加减速数据重定）----
+         * 旧配置 r_tilt=4e-4 的等效时间常数约 0.26s。实车前进加速时加速度计反算
+         * pitch 会偏 a/g（2 m/s² ≈ 11.5°），旧 KF 几乎全量跟随，而且 b 状态会把
+         * 这段假倾角当陀螺零偏学进去。实测（ig/加减速.csv）事件尺度：
+         *   KF base_pitch 10.7° RMS / 17.9° 峰值，纯陀螺只有 0.82° RMS / 2.07°；
+         *   炮管物理点头 10.0° RMS / 16.0° 峰值，和 -kf_err 相关 0.994。
+         * 因此：
+         *   - bias_est_disable=1：冻结 b，不让它吸收加速度；
+         *     （安装偏置本身仍准：CH5 加速度计反算均值 0.018°；
+         *       冻结 b 去掉的是"用 acc 学残余零偏"的能力，代价见下）
+         *   - r_tilt 4e-4 → 0.4：τ≈9s，acc 只做慢速绝对定姿，动态由陀螺承担；
+         *   - 再加 GimbalUpdateAccelGate：底盘加速度超阈值直接跳过 acc 更新，
+         *     把 A 剩下的低频跟随也切掉。
+         * 冻结 b 的静态代价：静止段纯陀螺 pitch 漂移实测 0.038°/s(20.3℃)~
+         * 0.062°/s(30.6℃)，τ=9s → b_res*τ ≈ 0.35~0.56° 的静态 pitch 偏差
+         * （实测 30.6℃ 下 CH4 比 CH5 高 0.515°，不是偏置坏了）；若在意可把
+         * r_tilt 降到 0.1（≈0.17~0.28°），动态抗扰仍由门控保证。 */
         .q_tilt = 1e-5f,
         .q_bias = 0.0f,
-        .r_tilt = 4e-4f,
+        .r_tilt = 4e-1f,
+        .bias_est_disable = 1,
         .dt_max = 0.01f, // 任务被拖延（app.c 会打 DELAY 日志）时钳位单步积分
 
         /* ---- 温漂补偿用的温度低通 ----
@@ -810,6 +976,20 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         .torque = pitchup_ctrl.data.current,
     };
 
+    /* yaw 相对底盘前进方向的夹角 θ（编码器关节角，不是世界系航向）：
+     * ① 加速度门控要把底盘加速度转到云台基座系，需要它，故提前到这里算；
+     * ② 主动倒下的前置条件 —— 云台要先和底盘对正，折叠时才不会别住车体。
+     * 速度也取编码器侧：判断的是“相对底盘不再转动”，与 IMU 世界系 yaw_rate 无关。 */
+    const float yaw_rel = Lib_Math_WrapAngleNegPIToPI((float)yaw_ctrl.data.position - chassis_gimbal_offset);
+    const uint8_t yaw_aligned = (Lib_Math_Fabs(yaw_rel) < GIMBAL_YAW_ALIGN_EPS) && (Lib_Math_Fabs(yaw_ctrl.data.speed) < GIMBAL_YAW_ALIGN_SPEED);
+
+    /* 底盘加速度门控（B）：底盘 vx/vy 由 cmd 队列带过来，本板差分得加速度；
+     * 超阈值时冻结对应轴的加速度计更新，让陀螺承担动态。
+     * 必须在 BMI088KalmanUpdate 之前调用（门控是"本帧"语义）。 */
+    GimbalUpdateAccelGate(dt_s, time_stamp, yaw_rel,
+                          gimbal_cmd2gimbal_data.chassis_vx,
+                          gimbal_cmd2gimbal_data.chassis_vy);
+
     /* 姿态更新：读数据 → dt（陀螺时间戳差分）→ 标定修正 → KF → yaw 积分
      * 全在 drvlib_bmi088_kalman 内部（标定值是写死的常量），app 只取结果。
      * valid：姿态可用（已播种）；dt==0 表示本帧没有新陀螺样本、未积分（正常），
@@ -850,30 +1030,17 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         .torque = yaw_ctrl.data.current, // 编码器侧反馈只用于 ID/监控，控制量取自 IMU
     };
 
-    /* yaw 相对底盘前进方向的夹角 θ（编码器关节角，不是世界系航向）：
-     * 主动倒下的前置条件 —— 云台要先和底盘对正，折叠时才不会别住车体。
-     * 速度也取编码器侧：判断的是“相对底盘不再转动”，与 IMU 世界系 yaw_rate 无关。 */
-    const float yaw_rel = Lib_Math_WrapAngleNegPIToPI((float)yaw_ctrl.data.position - chassis_gimbal_offset);
-    const uint8_t yaw_aligned = (Lib_Math_Fabs(yaw_rel) < GIMBAL_YAW_ALIGN_EPS) && (Lib_Math_Fabs(yaw_ctrl.data.speed) < GIMBAL_YAW_ALIGN_SPEED);
+    /* yaw_rel / yaw_aligned 已在上面（IMU 更新之前）算好：门控的坐标旋转先用到。 */
 
-    /* VOFA 调试输出已移到 drvlib 里：app_gimbal 的 bmi088_cfg 里把
-     *   .vofa_enable = 1
-     * 打开，drvlib 每帧自己把 IMU 数据写进通道并 VofaSend（通道表在
-     * drvlib_bmi088_kalman.h 头注释"VOFA 调试输出"一节，CH1~CH15）。
-     * 验证标定：CH13-15 上电后应恒等于 s_bmi088_calib 里的数值（tempco 未标定时）；
-     *   看 CH12（温度）与 CH4-6 均值漂移可判断是否还需要温漂标定；
-     *   yaw 漂移速率看 CH3 长时间趋势，转动 yaw 时 CH11 应约等于 d(CH3)/dt，
-     *   且 CH1-2 基本不动。
-     * 注意：帧由 drvlib 发出，app 不要再自己调 VofaSend（会多发一帧）；
-     *       而通道号是全局的 —— lib_axis_pid_lite 的 vofa_enable 占用
-     *       CH vofa_base_ch ~ +11、app_shoot.c 的调试块占用 CH1~CH4，
-     *       要同时看就得把它们错开或用别的通道号。
-     * 当前配置（调 yaw 轴摩擦辨识）：
+    /* VOFA 当前配置（GIMBAL_PITCH_DEBUG_VOFA=1，通道表见文件头）：
      *   - 唯一发送者 = AppGimbalRun 末尾的 VofaSend；
-     *   - 唯一输出轴 = yaw_axis：CH1~CH12 基础块 + CH13~CH18 速度环块；
-     *   - AppGimbalRun 额外写 CH19~CH22：编码器位置/速度、wrap 行程、方向；
-     *   - 上 pitch 轴的 vofa_enable 已置 0（否则会与 yaw 抢 CH1~CH18）；
-     *   - BMI088 vofa_enable=0、SHOOT_VOFA_ENABLE=0、三轴 lib_motor vofa_enable=0。 */
+     *   - CH1~CH25 = 本函数末尾的调试块：IMU 姿态/acc/gyro + base_pitch /
+     *     acc 反算 pitch / 纯陀螺积分 pitch + pitch_world/pitch_x/关节角，
+     *     用于加减速点头诊断（base_pitch 与 acc_pitch 的差就是嫌疑量）；
+     *   - yaw_axis、上 pitch 轴、BMI088、app_shoot、三轴 lib_motor 的
+     *     vofa_enable 全为 0（通道号全局共享，同一时刻只能有一路写）。
+     * 调 yaw 时把 GIMBAL_PITCH_DEBUG_VOFA 置 0，yaw_axis 的 CH1~CH18 会自动恢复，
+     * 同时末尾调试块停止写 CH1~CH25。 */
 
     // setref
     /* 状态机：驱动量 = cmd 下发的模式（目标姿态）+ 下 pitch 位置（实际姿态），解出
@@ -1035,7 +1202,9 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         };
         yaw_motor_setref = AxisPidLiteCalculate(&yaw_axis, &yaw_state, &yaw_ref);
 
-        /* yaw 摩擦辨识附加观测 CH19~CH22（本 app 当前只有 yaw 写 VOFA）：
+#if !GIMBAL_PITCH_DEBUG_VOFA
+        /* yaw 摩擦辨识附加观测 CH19~CH22（仅非诊断模式；诊断模式 CH19/CH20
+         * 已被末尾的 pitch 调试块占用）：
          *   CH19 编码器单圈关节角 (rad)
          *   CH20 编码器关节速度 (rad/s)
          *   CH21 wrap 模式本方向累计行程 (rad)
@@ -1046,6 +1215,7 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         VofaSetChannel(20, yaw_ctrl.data.speed);
         VofaSetChannel(21, yaw_axis.friction_cv_travel);
         VofaSetChannel(22, yaw_axis.friction_cv_dir);
+#endif
     }
     else
     {
@@ -1092,6 +1262,80 @@ ITCM_RAM void AppGimbalRun(float dt, uint64_t time_stamp)
         .yaw_motor_vel = yaw_ctrl.data.speed,
     };
     xQueueOverwrite(gimbal2cmd_queue_handle, &gimbal2cmd_data);
+
+#if GIMBAL_PITCH_DEBUG_VOFA
+    /* ---- 加减速点头诊断 CH1~CH25（通道表见文件头 GIMBAL_PITCH_DEBUG_VOFA）----
+     * 只写 VOFA，不参与控制。imu_data.valid=0 时写 0，避免 atan2(0,0) 造出假偏置。 */
+    float dbg_acc_norm = 0.0f;
+    float dbg_acc_pitch_base = 0.0f; // 加速度计反算的基座 pitch（未滤波）
+    float dbg_gyro_pitch = gimbal_dbg_gyro_pitch;
+    float dbg_pitch_rate_kin = 0.0f; // θ̇ = cosφ·ωy - sinφ·ωz
+    const float dbg_pitch_p = pitchup_pos - PITCH_POS_ZERO_OFFSET; // 关节相对基座角 p
+    float dbg_pitch_world_gyro = 0.0f; // 陀螺参考的炮管物理世界系 pitch
+
+    if (imu_data.valid)
+    {
+        const float acc_x = imu_data.acc[0];
+        const float acc_y = imu_data.acc[1];
+        const float acc_z = imu_data.acc[2];
+        dbg_acc_norm = Lib_Math_Sqrt(acc_x * acc_x + acc_y * acc_y + acc_z * acc_z);
+        /* 与 drvlib_bmi088_kalman.c 的加速度计量测同式，再扣安装俯仰偏置 */
+        dbg_acc_pitch_base = Lib_Math_Atan2(-acc_x, Lib_Math_Sqrt(acc_y * acc_y + acc_z * acc_z)) - GIMBAL_IMU_MOUNT_PITCH;
+
+        /* 纯陀螺积分：第一次有效时用 base_pitch 播种，之后只积分、不碰 acc。
+         * 用 imu_data.dt（陀螺时间戳差分）而不是任务 dt，和 KF 的积分节拍一致。 */
+        float sr = 0.0f;
+        float cr = 1.0f;
+        Lib_Math_SinCos(imu_data.euler.roll, &sr, &cr);
+        dbg_pitch_rate_kin = cr * imu_data.gyro[1] - sr * imu_data.gyro[2];
+        if (!gimbal_dbg_gyro_pitch_valid)
+        {
+            gimbal_dbg_gyro_pitch = base_pitch;
+            gimbal_dbg_gyro_pitch_valid = 1;
+        }
+        else if (imu_data.dt > 0.0f)
+        {
+            gimbal_dbg_gyro_pitch += dbg_pitch_rate_kin * imu_data.dt;
+        }
+        dbg_gyro_pitch = gimbal_dbg_gyro_pitch;
+        /* 陀螺参考的炮管世界系 pitch = 基座 pitch - 关节角；
+         * 这才是物理指向，摇杆不动时它与 pitch_x 的差就是点头量 */
+        dbg_pitch_world_gyro = dbg_gyro_pitch - dbg_pitch_p;
+    }
+    else
+    {
+        /* 姿态还没播种：积分器失效，等有效后用当时的 base_pitch 重新播种 */
+        gimbal_dbg_gyro_pitch_valid = 0;
+    }
+
+    const float dbg_temp = (imu_data.temperature == imu_data.temperature) ? imu_data.temperature : 0.0f;
+
+    VofaSetChannel(1, imu_data.euler.roll);          // rad
+    VofaSetChannel(2, imu_data.euler.pitch);         // rad（含安装偏置）
+    VofaSetChannel(3, imu_data.euler.yaw);           // rad
+    VofaSetChannel(4, base_pitch);                   // rad（KF 基座 pitch）
+    VofaSetChannel(5, dbg_acc_pitch_base);           // rad（acc 反算基座 pitch）
+    VofaSetChannel(6, dbg_gyro_pitch);               // rad（纯陀螺积分基座 pitch）
+    VofaSetChannel(7, pitch_world);                  // rad（炮管世界系指向）
+    VofaSetChannel(8, gimbal_cmd2gimbal_data.pitch_x); // rad（cmd 世界系目标）
+    VofaSetChannel(9, dbg_pitch_p);                  // rad（关节相对基座 p）
+    VofaSetChannel(10, imu_data.acc[0]);             // m/s²
+    VofaSetChannel(11, imu_data.acc[1]);             // m/s²
+    VofaSetChannel(12, imu_data.acc[2]);             // m/s²
+    VofaSetChannel(13, dbg_acc_norm);                // m/s²
+    VofaSetChannel(14, imu_data.gyro[0]);            // rad/s
+    VofaSetChannel(15, imu_data.gyro[1]);            // rad/s
+    VofaSetChannel(16, gimbal_acc_gate_ax_base);     // m/s²（底盘速度差分 -> 基座系前向加速度）
+    VofaSetChannel(17, dbg_temp);                    // ℃
+    VofaSetChannel(18, (float)gimbal_acc_gate_pitch); // 0/1（pitch acc 门控）
+    VofaSetChannel(19, dbg_pitch_world_gyro);        // rad（陀螺参考的炮管世界系 pitch）
+    VofaSetChannel(20, dbg_pitch_rate_kin);          // rad/s
+    VofaSetChannel(21, yaw_rel);                     // rad（云台相对底盘前进方向）
+    VofaSetChannel(22, (float)yaw_ctrl.data.position); // rad（RS05 原始关节角）
+    VofaSetChannel(23, pitchup_motor_setref);        // Nm（上 pitch 力矩指令）
+    VofaSetChannel(24, pitchup_ctrl.data.current);    // Nm（上 pitch 反馈力矩）
+    VofaSetChannel(25, dt_s * 1000.0f);              // ms（任务周期）
+#endif
 
     /* VOFA：axis 模块已在本拍把通道写完（vofa_enable=1 的轴），这里统一发一帧。
      * 必须放在所有 VofaSetChannel 之后、且全工程只能有一个发送者（见文件头的开关说明）。 */

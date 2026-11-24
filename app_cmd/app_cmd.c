@@ -512,6 +512,10 @@ static void send_gimbal(void)
     // 默认：失能（mode 由状态机给，stop 时 motor 侧不动作）+ 设定值清零
     // 过洞档要等摩擦轮降速，故下发的是**生效模式**而不是 cmd_ctx.mode（见 gimbal_mode_effective）
     cmd_cmd2gimbal_data.mode = gimbal_mode_effective();
+    /* 底盘实测速度：原样带给 app_gimbal，由它差分成底盘加速度做 IMU 门控。
+     * 只在本板队列里传，不改底盘发出的 CAN 帧（chassis2gimbal_data 仍只有 vx/vy/w）。 */
+    cmd_cmd2gimbal_data.chassis_vx = chassis2gimbal_data.vx;
+    cmd_cmd2gimbal_data.chassis_vy = chassis2gimbal_data.vy;
     cmd_cmd2gimbal_data.pitch_x = 0.0f;
     cmd_cmd2gimbal_data.pitch_v = 0.0f;
     cmd_cmd2gimbal_data.pitch_a = 0.0f;
