@@ -164,7 +164,7 @@ static uint64_t gimbal_enable_last_ms = 0; // 上次周期重发使能的时刻 
 
 /* 速度环增益 (Nm/(rad/s))，仅上升/下降阶段工作。
  * 旧律速度项 kd*(v_ref-speed) 的 kd 约 1，先从 1.0 起调；过大会在换向/到位时振荡。 */
-#define GIMBAL_PITCHDOWN_VEL_KV 0.5f
+#define GIMBAL_PITCHDOWN_VEL_KV 1.0f
 
 /* 周期重发使能 (ms)。
  * 只在初始化发一次 0xFC 时：若 STM 先上电、电机后上电（或 RS05 上电后还在 CALI，
@@ -180,7 +180,7 @@ static uint64_t gimbal_enable_last_ms = 0; // 上次周期重发使能的时刻 
  * yaw 是可连续旋转的 wrap 轴，故用 wrap 模式：正向 turns 圈 → 反向 turns 圈，循环。
  * speed 为输出侧角速度 (rad/s)；单次只跑一个速度级，改 speed 重跑即可得到多个速度点。
  * ⚠ 多圈旋转前先确认线缆/滑环允许的圈数，turns 不要超过安全行程。 */
-#define GIMBAL_YAW_AXIS_STAGE AXIS_LITE_STAGE_TUNE
+#define GIMBAL_YAW_AXIS_STAGE AXIS_LITE_STAGE_NORMAL
 #define GIMBAL_YAW_FRICTION_SPEED 4.0f
 #define GIMBAL_YAW_FRICTION_TURNS 3.0f
 

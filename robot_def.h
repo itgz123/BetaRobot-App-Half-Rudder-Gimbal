@@ -2,6 +2,7 @@
 #define __ROBOT_DEF_H
 
 #include "lib_math.h"
+#include "robot_calib.h" // 本 app 的 yaw 机械零位标定（与底盘 app 的同名文件保持一致）
 
 // gimbal限位(rad)
 #define pitchup_position_3 -0.25f // 下pitch直立，上pitch最大仰角
@@ -56,19 +57,14 @@
 #define chassis_follow_ff 1.0f
 
 /* 云台指向相对底盘前进方向的机械零位偏置 (rad)，逆时针为正。
- * 底盘前进方向由底盘侧自己定义好了：就是 HalfRudderInverse 的车体系 x 轴，
- * 舵轮零位已由 half_rudder_chassis/robot_def.h 的 RUDDER_ZERO_OFFSET_L/R_DEG 标定到正前方。
- * 所以云台这边只剩这一个装配偏置：yaw 电机编码器零位与"云台指向 = 底盘前进方向"
- * 对不齐，差的就是这个角。
- * 云台相对底盘前进方向的真实夹角 θ = wrap(yaw_motor_position - chassis_gimbal_offset)。
- * 云台侧用它旋转摇杆向量；底盘侧直接读同一颗 RS05 的原始反馈，扣同一个偏置
- * （chassis 的 CHASSIS_GIMBAL_OFFSET，数值必须与本宏一致）得到自己的实测 θ。
- * 帧里的 gimbal2chassis_data.yaw 是目标偏角 θ_ref，不是实测角。
- *
- * 标定：车静止，手动把云台指向摆到与底盘前进方向一致，读 yaw 电机的 position
- * （即 gimbal2cmd 回传的 yaw_motor_position），读数就是该填的值。
- * 未标定时填 0：退化为"编码器零位即对正"。 */
-#define chassis_gimbal_offset DEG_TO_RAD(30.0f)
+ * 云台侧：θ = wrap(yaw_ctrl.data.position - chassis_gimbal_offset)；
+ * 底盘侧：θ = wrap(-raw_position - CHASSIS_GIMBAL_OFFSET)。
+ * 两边公式相同，偏移必须相同。两个 app 是独立仓库，主仓库不追踪公共头文件，
+ * 所以数值在各自 app 的 robot_calib.h 里各存一份（两份必须保持完全一致）：
+ *   对齐 yaw → 读 yaw_motor.data[].position（RS05 原始 raw）→ 填
+ *   YAW_ALIGN_MOTOR_RAW_POSITION_RAD；宏自动做 wrap(-raw) 得到偏置。
+ * chassis 侧的 CHASSIS_GIMBAL_OFFSET 也从同一组宏导出，不会再出现两边不一致。 */
+#define chassis_gimbal_offset (ROBOT_CHASSIS_GIMBAL_OFFSET)
 
 /* 摇杆向量旋转角的执行延迟补偿时间 T (s)，只作用于 send_chassis 的向量旋转。
  *
